@@ -4,7 +4,7 @@ const ztree = @import("ztree");
 const Node = ztree.Node;
 
 /// Parse Markdown text into a ztree Node tree.
-pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Node {
+pub fn parse(allocator: std.mem.Allocator, input: []const u8) std.mem.Allocator.Error!Node {
     const blocks = try parseBlocks(allocator, input);
     return buildTree(allocator, blocks);
 }
@@ -13,7 +13,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Node {
 // Pass 1 — Block scanner
 // ---------------------------------------------------------------------------
 
-const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr };
+const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote };
 
 const Block = struct {
     tag: Tag,
@@ -34,6 +34,9 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
     var fence_lang: []const u8 = "";
     var fence_content_start: usize = 0;
 
+    // Blockquote state
+    var bq_lines: std.ArrayList([]const u8) = .empty;
+
     var pos: usize = 0;
     while (pos < input.len) {
         const line_start = pos;
@@ -52,6 +55,23 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
             }
             // Lines inside fence are captured by the content slice — no action needed.
             continue;
+        }
+
+        // Blockquote line — collect stripped lines
+        if (stripBlockquotePrefix(line)) |stripped| {
+            if (para_start) |start| {
+                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
+                para_start = null;
+            }
+            try bq_lines.append(allocator, stripped);
+            continue;
+        }
+
+        // Not a blockquote line — flush any accumulated blockquote
+        if (bq_lines.items.len > 0) {
+            const inner = try joinLines(allocator, bq_lines.items);
+            try blocks.append(allocator, .{ .tag = .blockquote, .content = inner });
+            bq_lines.clearRetainingCapacity();
         }
 
         if (isBlankLine(line)) {
@@ -99,6 +119,12 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
             para_start = line_start;
         }
         para_end = line_end;
+    }
+
+    // Flush trailing blockquote
+    if (bq_lines.items.len > 0) {
+        const inner = try joinLines(allocator, bq_lines.items);
+        try blocks.append(allocator, .{ .tag = .blockquote, .content = inner });
     }
 
     // Flush trailing paragraph
@@ -206,17 +232,55 @@ fn isThematicBreak(line: []const u8) bool {
     return count >= 3;
 }
 
+/// Strip the `> ` or `>` prefix from a blockquote line. Returns null if not a blockquote line.
+fn stripBlockquotePrefix(line: []const u8) ?[]const u8 {
+    if (line.len == 0 or line[0] != '>') return null;
+    if (line.len > 1 and line[1] == ' ') return line[2..];
+    return line[1..];
+}
+
+/// Join slices with newline separators into a single allocated buffer.
+fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u8 {
+    if (lines.len == 0) return "";
+
+    var total: usize = 0;
+    for (lines, 0..) |line, i| {
+        total += line.len;
+        if (i < lines.len - 1) total += 1;
+    }
+
+    const buf = try allocator.alloc(u8, total);
+    var offset: usize = 0;
+    for (lines, 0..) |line, i| {
+        @memcpy(buf[offset .. offset + line.len], line);
+        offset += line.len;
+        if (i < lines.len - 1) {
+            buf[offset] = '\n';
+            offset += 1;
+        }
+    }
+
+    return buf;
+}
+
 // ---------------------------------------------------------------------------
 // Pass 2 — Tree builder + inline parser
 // ---------------------------------------------------------------------------
 
 /// Convert a list of Blocks into a ztree Node tree (a fragment of top-level elements).
-fn buildTree(allocator: std.mem.Allocator, blocks: []const Block) !Node {
+fn buildTree(allocator: std.mem.Allocator, blocks: []const Block) std.mem.Allocator.Error!Node {
     if (blocks.len == 0) return .{ .fragment = &.{} };
 
     const nodes = try allocator.alloc(Node, blocks.len);
     for (blocks, 0..) |block, i| {
-        if (block.tag == .hr) {
+        if (block.tag == .blockquote) {
+            const inner = try parse(allocator, block.content);
+            nodes[i] = .{ .element = .{
+                .tag = "blockquote",
+                .attrs = &.{},
+                .children = inner.fragment,
+            } };
+        } else if (block.tag == .hr) {
             nodes[i] = .{ .element = .{
                 .tag = "hr",
                 .attrs = &.{},
@@ -352,6 +416,7 @@ fn tagName(tag: Tag) []const u8 {
         .p => "p",
         .pre => "pre",
         .hr => "hr",
+        .blockquote => "blockquote",
     };
 }
 
@@ -488,6 +553,32 @@ test "isClosingFence — fewer backticks not a close" {
 
 test "isClosingFence — text after backticks not a close" {
     try testing.expect(!isClosingFence("``` foo", 3));
+}
+
+// -- helper unit tests: stripBlockquotePrefix --
+
+test "stripBlockquotePrefix — with space" {
+    try testing.expectEqualStrings("hello", stripBlockquotePrefix("> hello").?);
+}
+
+test "stripBlockquotePrefix — without space" {
+    try testing.expectEqualStrings("hello", stripBlockquotePrefix(">hello").?);
+}
+
+test "stripBlockquotePrefix — bare >" {
+    try testing.expectEqualStrings("", stripBlockquotePrefix(">").?);
+}
+
+test "stripBlockquotePrefix — > with space only" {
+    try testing.expectEqualStrings("", stripBlockquotePrefix("> ").?);
+}
+
+test "stripBlockquotePrefix — not a blockquote" {
+    try testing.expectEqual(null, stripBlockquotePrefix("hello"));
+}
+
+test "stripBlockquotePrefix — empty line" {
+    try testing.expectEqual(null, stripBlockquotePrefix(""));
 }
 
 // -- helper unit tests: isThematicBreak --
@@ -839,6 +930,98 @@ test "thematic break — with spaces" {
     const tree = try parse(arena.allocator(), "- - -");
     const nodes = try expectFragment(tree, 1);
     try testing.expectEqualStrings("hr", nodes[0].element.tag);
+}
+
+// -- parse: blockquotes --
+
+test "simple blockquote" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> Hello");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    const inner = nodes[0].element.children;
+    try testing.expectEqual(1, inner.len);
+    try expectTextElement(inner[0], "p", "Hello");
+}
+
+test "blockquote — multi-line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> Line 1\n> Line 2");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    const inner = nodes[0].element.children;
+    try testing.expectEqual(1, inner.len);
+    try expectTextElement(inner[0], "p", "Line 1\nLine 2");
+}
+
+test "blockquote — with heading inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> # Title\n>\n> Body.");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    const inner = nodes[0].element.children;
+    try testing.expectEqual(2, inner.len);
+    try expectTextElement(inner[0], "h1", "Title");
+    try expectTextElement(inner[1], "p", "Body.");
+}
+
+test "blockquote — between paragraphs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Before.\n\n> Quote.\n\nAfter.");
+    const nodes = try expectFragment(tree, 3);
+    try expectTextElement(nodes[0], "p", "Before.");
+    try testing.expectEqualStrings("blockquote", nodes[1].element.tag);
+    try expectTextElement(nodes[2], "p", "After.");
+}
+
+test "blockquote — nested" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> > Nested");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    const outer = nodes[0].element.children;
+    try testing.expectEqual(1, outer.len);
+    try testing.expectEqualStrings("blockquote", outer[0].element.tag);
+    const inner = outer[0].element.children;
+    try testing.expectEqual(1, inner.len);
+    try expectTextElement(inner[0], "p", "Nested");
+}
+
+test "blockquote — blank line without > ends blockquote" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> First\n\n> Second");
+    const nodes = try expectFragment(tree, 2);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    try testing.expectEqualStrings("blockquote", nodes[1].element.tag);
+}
+
+test "blockquote — immediately after paragraph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Text.\n> Quote.");
+    const nodes = try expectFragment(tree, 2);
+    try expectTextElement(nodes[0], "p", "Text.");
+    try testing.expectEqualStrings("blockquote", nodes[1].element.tag);
+}
+
+test "blockquote — with inline code" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "> Use `foo` here.");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("blockquote", nodes[0].element.tag);
+    const p = nodes[0].element.children[0];
+    try testing.expectEqualStrings("p", p.element.tag);
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Use ", p.element.children[0].text);
+    try testing.expectEqualStrings("code", p.element.children[1].element.tag);
+    try testing.expectEqualStrings(" here.", p.element.children[2].text);
 }
 
 // -- parse: inline code --
