@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.6.0] — 2026-02-22
+
+### Features
+
+- Emphasis: `*em*`, `**strong**`, and `***em+strong***` with recursive nesting
+
 ## [0.5.0] — 2026-02-22
 
 ### Features
