@@ -494,7 +494,7 @@ fn buildCodeBlock(allocator: std.mem.Allocator, block: Block) !Node {
 /// Parse inline Markdown within a leaf block's content. Currently handles:
 /// - backtick code spans (single or multi-backtick)
 /// - plain text (everything else)
-fn parseInlines(allocator: std.mem.Allocator, content: []const u8) ![]const Node {
+fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const Node {
     var nodes: std.ArrayList(Node) = .empty;
     var text_start: usize = 0;
     var pos: usize = 0;
@@ -527,6 +527,22 @@ fn parseInlines(allocator: std.mem.Allocator, content: []const u8) ![]const Node
                 text_start = pos;
             }
             // No matching close — backticks are literal text, pos already advanced past them.
+        } else if (content[pos] == '*') {
+            // Count opening stars
+            const star_start = pos;
+            while (pos < content.len and content[pos] == '*') pos += 1;
+            const star_count = pos - star_start;
+
+            if (try handleEmphasis(allocator, content, star_start, star_count)) |result| {
+                // Flush pending text
+                if (text_start < star_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..star_start] });
+                }
+                try nodes.append(allocator, result.node);
+                pos = result.end;
+                text_start = pos;
+            }
+            // No match — stars are literal text, pos already advanced past them.
         } else {
             pos += 1;
         }
@@ -538,6 +554,76 @@ fn parseInlines(allocator: std.mem.Allocator, content: []const u8) ![]const Node
     }
 
     return try nodes.toOwnedSlice(allocator);
+}
+
+const EmphasisResult = struct {
+    node: Node,
+    end: usize,
+};
+
+/// Try to build an emphasis node from a star run. Returns null if no matching close found.
+fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start: usize, star_count: usize) std.mem.Allocator.Error!?EmphasisResult {
+    const after_stars = star_start + star_count;
+
+    // Don't open emphasis if followed by space or at end of content
+    if (after_stars >= content.len or content[after_stars] == ' ') return null;
+
+    if (star_count == 3) {
+        // ***text*** → em(strong(text))
+        if (findExactStarRun(content, after_stars, 3)) |close| {
+            const inner = try parseInlines(allocator, content[after_stars..close]);
+            const strong_children = try allocator.alloc(Node, 1);
+            strong_children[0] = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } };
+            return .{
+                .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = strong_children } },
+                .end = close + 3,
+            };
+        }
+    }
+
+    if (star_count >= 2) {
+        // **text** → strong(text)
+        if (findExactStarRun(content, after_stars, 2)) |close| {
+            const inner = try parseInlines(allocator, content[after_stars..close]);
+            return .{
+                .node = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } },
+                .end = close + 2,
+            };
+        }
+    }
+
+    if (star_count >= 1) {
+        // *text* → em(text)
+        if (findExactStarRun(content, after_stars, 1)) |close| {
+            const inner = try parseInlines(allocator, content[after_stars..close]);
+            return .{
+                .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = inner } },
+                .end = close + 1,
+            };
+        }
+    }
+
+    return null;
+}
+
+/// Find a `*` run of exactly `count` length, starting search at `start`.
+/// Skips runs preceded by a space (not valid closers).
+fn findExactStarRun(content: []const u8, start: usize, count: usize) ?usize {
+    var pos = start;
+    while (pos < content.len) {
+        if (content[pos] == '*') {
+            const run_start = pos;
+            while (pos < content.len and content[pos] == '*') pos += 1;
+            if (pos - run_start == count) {
+                // Skip if preceded by space
+                if (run_start > 0 and content[run_start - 1] == ' ') continue;
+                return run_start;
+            }
+        } else {
+            pos += 1;
+        }
+    }
+    return null;
 }
 
 /// Find closing backtick run of exactly `count` length, starting search at `start`.
@@ -1381,6 +1467,134 @@ test "list — immediately after paragraph" {
     const nodes = try expectFragment(tree, 2);
     try expectTextElement(nodes[0], "p", "Text.");
     try testing.expectEqualStrings("ul", nodes[1].element.tag);
+}
+
+// -- parse: emphasis --
+
+test "em — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Hello *world*");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("em", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("world", p.element.children[1].element.children[0].text);
+}
+
+test "strong — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Hello **world**");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("strong", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("world", p.element.children[1].element.children[0].text);
+}
+
+test "em+strong — triple stars" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "***bold italic***");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(1, p.element.children.len);
+    const em = p.element.children[0];
+    try testing.expectEqualStrings("em", em.element.tag);
+    try testing.expectEqualStrings("strong", em.element.children[0].element.tag);
+    try testing.expectEqualStrings("bold italic", em.element.children[0].element.children[0].text);
+}
+
+test "strong with em inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "**bold *italic* bold**");
+    const p = (try expectFragment(tree, 1))[0];
+    const strong = p.element.children[0];
+    try testing.expectEqualStrings("strong", strong.element.tag);
+    try testing.expectEqual(3, strong.element.children.len);
+    try testing.expectEqualStrings("bold ", strong.element.children[0].text);
+    try testing.expectEqualStrings("em", strong.element.children[1].element.tag);
+    try testing.expectEqualStrings("italic", strong.element.children[1].element.children[0].text);
+    try testing.expectEqualStrings(" bold", strong.element.children[2].text);
+}
+
+test "em with strong inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "*italic **bold** italic*");
+    const p = (try expectFragment(tree, 1))[0];
+    const em = p.element.children[0];
+    try testing.expectEqualStrings("em", em.element.tag);
+    try testing.expectEqual(3, em.element.children.len);
+    try testing.expectEqualStrings("italic ", em.element.children[0].text);
+    try testing.expectEqualStrings("strong", em.element.children[1].element.tag);
+    try testing.expectEqualStrings("bold", em.element.children[1].element.children[0].text);
+    try testing.expectEqualStrings(" italic", em.element.children[2].text);
+}
+
+test "em — at start" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "*em* text");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("em", p.element.children[0].element.tag);
+    try testing.expectEqualStrings(" text", p.element.children[1].text);
+}
+
+test "em — at end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "text *em*");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("text ", p.element.children[0].text);
+    try testing.expectEqualStrings("em", p.element.children[1].element.tag);
+}
+
+test "unmatched star — literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "a * b");
+    const nodes = try expectFragment(tree, 1);
+    try expectTextElement(nodes[0], "p", "a * b");
+}
+
+test "emphasis with code inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "**the `parse` function**");
+    const p = (try expectFragment(tree, 1))[0];
+    const strong = p.element.children[0];
+    try testing.expectEqualStrings("strong", strong.element.tag);
+    try testing.expectEqual(3, strong.element.children.len);
+    try testing.expectEqualStrings("the ", strong.element.children[0].text);
+    try testing.expectEqualStrings("code", strong.element.children[1].element.tag);
+    try testing.expectEqualStrings(" function", strong.element.children[2].text);
+}
+
+test "emphasis in heading" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "## A **bold** heading");
+    const h = (try expectFragment(tree, 1))[0];
+    try testing.expectEqualStrings("h2", h.element.tag);
+    try testing.expectEqual(3, h.element.children.len);
+    try testing.expectEqualStrings("A ", h.element.children[0].text);
+    try testing.expectEqualStrings("strong", h.element.children[1].element.tag);
+    try testing.expectEqualStrings(" heading", h.element.children[2].text);
+}
+
+test "multiple emphasis spans" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "*a* and *b*");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("em", p.element.children[0].element.tag);
+    try testing.expectEqualStrings(" and ", p.element.children[1].text);
+    try testing.expectEqualStrings("em", p.element.children[2].element.tag);
 }
 
 // -- parse: inline code --
