@@ -543,6 +543,30 @@ fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.Alloc
                 text_start = pos;
             }
             // No match — stars are literal text, pos already advanced past them.
+        } else if (content[pos] == '!' and pos + 1 < content.len and content[pos + 1] == '[') {
+            const marker_start = pos;
+            if (try handleLinkOrImage(allocator, content, pos, true)) |result| {
+                if (text_start < marker_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
+                }
+                try nodes.append(allocator, result.node);
+                pos = result.end;
+                text_start = pos;
+            } else {
+                pos += 2; // ![ is literal
+            }
+        } else if (content[pos] == '[') {
+            const marker_start = pos;
+            if (try handleLinkOrImage(allocator, content, pos, false)) |result| {
+                if (text_start < marker_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
+                }
+                try nodes.append(allocator, result.node);
+                pos = result.end;
+                text_start = pos;
+            } else {
+                pos += 1; // [ is literal
+            }
         } else {
             pos += 1;
         }
@@ -624,6 +648,102 @@ fn findExactStarRun(content: []const u8, start: usize, count: usize) ?usize {
         }
     }
     return null;
+}
+
+const LinkResult = struct {
+    node: Node,
+    end: usize,
+};
+
+/// Try to build a link or image from `[text](url)` or `![alt](src)` at the given position.
+fn handleLinkOrImage(allocator: std.mem.Allocator, content: []const u8, pos: usize, is_image: bool) std.mem.Allocator.Error!?LinkResult {
+    const bracket_start: usize = if (is_image) pos + 2 else pos + 1;
+
+    // Find closing ]
+    const bracket_end = (std.mem.indexOfScalar(u8, content[bracket_start..], ']') orelse return null) + bracket_start;
+
+    // Must have ( immediately after ]
+    if (bracket_end + 1 >= content.len or content[bracket_end + 1] != '(') return null;
+
+    // Find closing ) with balanced parens
+    const paren_start = bracket_end + 2;
+    const paren_end = findClosingParen(content, paren_start) orelse return null;
+
+    const text_content = content[bracket_start..bracket_end];
+    const url_content = content[paren_start..paren_end];
+    const url_info = parseUrlTitle(url_content);
+
+    if (is_image) {
+        const attr_count: usize = if (url_info.title != null) 3 else 2;
+        const attrs = try allocator.alloc(ztree.Attr, attr_count);
+        attrs[0] = .{ .key = "src", .value = url_info.url };
+        attrs[1] = .{ .key = "alt", .value = text_content };
+        if (url_info.title) |title| {
+            attrs[2] = .{ .key = "title", .value = title };
+        }
+        return .{
+            .node = .{ .element = .{ .tag = "img", .attrs = attrs, .children = &.{} } },
+            .end = paren_end + 1,
+        };
+    } else {
+        const attr_count: usize = if (url_info.title != null) 2 else 1;
+        const attrs = try allocator.alloc(ztree.Attr, attr_count);
+        attrs[0] = .{ .key = "href", .value = url_info.url };
+        if (url_info.title) |title| {
+            attrs[1] = .{ .key = "title", .value = title };
+        }
+        const children = try parseInlines(allocator, text_content);
+        return .{
+            .node = .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } },
+            .end = paren_end + 1,
+        };
+    }
+}
+
+/// Find closing `)` with balanced parentheses.
+fn findClosingParen(content: []const u8, start: usize) ?usize {
+    var depth: usize = 1;
+    var pos = start;
+    while (pos < content.len) {
+        if (content[pos] == '(') {
+            depth += 1;
+        } else if (content[pos] == ')') {
+            depth -= 1;
+            if (depth == 0) return pos;
+        }
+        pos += 1;
+    }
+    return null;
+}
+
+const UrlTitle = struct {
+    url: []const u8,
+    title: ?[]const u8,
+};
+
+/// Parse URL and optional title from the content between `(` and `)`.
+/// Supports `url`, `url "title"`, and `url 'title'`.
+fn parseUrlTitle(content: []const u8) UrlTitle {
+    const trimmed = std.mem.trim(u8, content, " \t");
+    if (trimmed.len < 2) return .{ .url = trimmed, .title = null };
+
+    const last_char = trimmed[trimmed.len - 1];
+    if (last_char == '"' or last_char == '\'') {
+        // Search backwards for matching opening quote preceded by a space
+        var i: usize = trimmed.len - 2;
+        while (true) {
+            if (trimmed[i] == last_char and i > 0 and trimmed[i - 1] == ' ') {
+                return .{
+                    .url = std.mem.trimEnd(u8, trimmed[0 .. i - 1], " \t"),
+                    .title = trimmed[i + 1 .. trimmed.len - 1],
+                };
+            }
+            if (i == 0) break;
+            i -= 1;
+        }
+    }
+
+    return .{ .url = trimmed, .title = null };
 }
 
 /// Find closing backtick run of exactly `count` length, starting search at `start`.
@@ -1595,6 +1715,152 @@ test "multiple emphasis spans" {
     try testing.expectEqualStrings("em", p.element.children[0].element.tag);
     try testing.expectEqualStrings(" and ", p.element.children[1].text);
     try testing.expectEqualStrings("em", p.element.children[2].element.tag);
+}
+
+// -- parse: links and images --
+
+test "link — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[click](https://example.com)");
+    const p = (try expectFragment(tree, 1))[0];
+    const a = p.element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqual(1, a.element.attrs.len);
+    try testing.expectEqualStrings("href", a.element.attrs[0].key);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("click", a.element.children[0].text);
+}
+
+test "link — with title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[click](url \"My Title\")");
+    const a = (try expectFragment(tree, 1))[0].element.children[0];
+    try testing.expectEqual(2, a.element.attrs.len);
+    try testing.expectEqualStrings("href", a.element.attrs[0].key);
+    try testing.expectEqualStrings("url", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("title", a.element.attrs[1].key);
+    try testing.expectEqualStrings("My Title", a.element.attrs[1].value.?);
+}
+
+test "link — with emphasis inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[**bold** link](url)");
+    const a = (try expectFragment(tree, 1))[0].element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqual(2, a.element.children.len);
+    try testing.expectEqualStrings("strong", a.element.children[0].element.tag);
+    try testing.expectEqualStrings(" link", a.element.children[1].text);
+}
+
+test "link — surrounded by text" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "See [here](url) for details.");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("See ", p.element.children[0].text);
+    try testing.expectEqualStrings("a", p.element.children[1].element.tag);
+    try testing.expectEqualStrings(" for details.", p.element.children[2].text);
+}
+
+test "image — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "![photo](img.jpg)");
+    const p = (try expectFragment(tree, 1))[0];
+    const img = p.element.children[0];
+    try testing.expectEqualStrings("img", img.element.tag);
+    try testing.expectEqual(2, img.element.attrs.len);
+    try testing.expectEqualStrings("src", img.element.attrs[0].key);
+    try testing.expectEqualStrings("img.jpg", img.element.attrs[0].value.?);
+    try testing.expectEqualStrings("alt", img.element.attrs[1].key);
+    try testing.expectEqualStrings("photo", img.element.attrs[1].value.?);
+    try testing.expectEqual(0, img.element.children.len);
+}
+
+test "image — with title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "![alt](src \"My Photo\")");
+    const img = (try expectFragment(tree, 1))[0].element.children[0];
+    try testing.expectEqual(3, img.element.attrs.len);
+    try testing.expectEqualStrings("title", img.element.attrs[2].key);
+    try testing.expectEqualStrings("My Photo", img.element.attrs[2].value.?);
+}
+
+test "image — surrounded by text" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Before ![pic](x.png) after.");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Before ", p.element.children[0].text);
+    try testing.expectEqualStrings("img", p.element.children[1].element.tag);
+    try testing.expectEqualStrings(" after.", p.element.children[2].text);
+}
+
+test "link — unmatched bracket is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "just [text here");
+    const nodes = try expectFragment(tree, 1);
+    try expectTextElement(nodes[0], "p", "just [text here");
+}
+
+test "link — bracket without paren is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[text] no link");
+    const nodes = try expectFragment(tree, 1);
+    try expectTextElement(nodes[0], "p", "[text] no link");
+}
+
+test "link — URL with balanced parens" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[wiki](https://en.wikipedia.org/wiki/Foo_(bar))");
+    const a = (try expectFragment(tree, 1))[0].element.children[0];
+    try testing.expectEqualStrings("https://en.wikipedia.org/wiki/Foo_(bar)", a.element.attrs[0].value.?);
+}
+
+test "multiple links in one line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "[a](1) and [b](2)");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("a", p.element.children[0].element.tag);
+    try testing.expectEqualStrings(" and ", p.element.children[1].text);
+    try testing.expectEqualStrings("a", p.element.children[2].element.tag);
+}
+
+// -- helper unit tests: parseUrlTitle --
+
+test "parseUrlTitle — url only" {
+    const result = parseUrlTitle("https://example.com");
+    try testing.expectEqualStrings("https://example.com", result.url);
+    try testing.expectEqual(null, result.title);
+}
+
+test "parseUrlTitle — url with double-quoted title" {
+    const result = parseUrlTitle("url \"My Title\"");
+    try testing.expectEqualStrings("url", result.url);
+    try testing.expectEqualStrings("My Title", result.title.?);
+}
+
+test "parseUrlTitle — url with single-quoted title" {
+    const result = parseUrlTitle("url 'My Title'");
+    try testing.expectEqualStrings("url", result.url);
+    try testing.expectEqualStrings("My Title", result.title.?);
+}
+
+test "parseUrlTitle — empty" {
+    const result = parseUrlTitle("");
+    try testing.expectEqualStrings("", result.url);
+    try testing.expectEqual(null, result.title);
 }
 
 // -- parse: inline code --
