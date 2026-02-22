@@ -13,7 +13,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) !Node {
 // Pass 1 — Block scanner
 // ---------------------------------------------------------------------------
 
-const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre };
+const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr };
 
 const Block = struct {
     tag: Tag,
@@ -59,6 +59,16 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
                 try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
                 para_start = null;
             }
+            continue;
+        }
+
+        if (isThematicBreak(line)) {
+            // Flush any open paragraph first
+            if (para_start) |start| {
+                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
+                para_start = null;
+            }
+            try blocks.append(allocator, .{ .tag = .hr, .content = "" });
             continue;
         }
 
@@ -175,6 +185,27 @@ fn isBlankLine(line: []const u8) bool {
     return true;
 }
 
+/// A thematic break is a line containing 3+ of the same character (-, *, _)
+/// with only optional spaces between them.
+fn isThematicBreak(line: []const u8) bool {
+    var char: ?u8 = null;
+    var count: usize = 0;
+    for (line) |c| {
+        if (c == ' ' or c == '\t') continue;
+        if (c == '-' or c == '*' or c == '_') {
+            if (char == null) {
+                char = c;
+            } else if (c != char.?) {
+                return false;
+            }
+            count += 1;
+        } else {
+            return false;
+        }
+    }
+    return count >= 3;
+}
+
 // ---------------------------------------------------------------------------
 // Pass 2 — Tree builder + inline parser
 // ---------------------------------------------------------------------------
@@ -185,7 +216,13 @@ fn buildTree(allocator: std.mem.Allocator, blocks: []const Block) !Node {
 
     const nodes = try allocator.alloc(Node, blocks.len);
     for (blocks, 0..) |block, i| {
-        if (block.tag == .pre) {
+        if (block.tag == .hr) {
+            nodes[i] = .{ .element = .{
+                .tag = "hr",
+                .attrs = &.{},
+                .children = &.{},
+            } };
+        } else if (block.tag == .pre) {
             nodes[i] = try buildCodeBlock(allocator, block);
         } else {
             const children = try parseInlines(allocator, block.content);
@@ -314,6 +351,7 @@ fn tagName(tag: Tag) []const u8 {
         .h6 => "h6",
         .p => "p",
         .pre => "pre",
+        .hr => "hr",
     };
 }
 
@@ -450,6 +488,44 @@ test "isClosingFence — fewer backticks not a close" {
 
 test "isClosingFence — text after backticks not a close" {
     try testing.expect(!isClosingFence("``` foo", 3));
+}
+
+// -- helper unit tests: isThematicBreak --
+
+test "isThematicBreak — three dashes" {
+    try testing.expect(isThematicBreak("---"));
+}
+
+test "isThematicBreak — three asterisks" {
+    try testing.expect(isThematicBreak("***"));
+}
+
+test "isThematicBreak — three underscores" {
+    try testing.expect(isThematicBreak("___"));
+}
+
+test "isThematicBreak — more than three" {
+    try testing.expect(isThematicBreak("-----"));
+}
+
+test "isThematicBreak — spaces between" {
+    try testing.expect(isThematicBreak("- - -"));
+}
+
+test "isThematicBreak — spaces and tabs between" {
+    try testing.expect(isThematicBreak(" * * * "));
+}
+
+test "isThematicBreak — two dashes not enough" {
+    try testing.expect(!isThematicBreak("--"));
+}
+
+test "isThematicBreak — mixed chars rejected" {
+    try testing.expect(!isThematicBreak("-*-"));
+}
+
+test "isThematicBreak — text content rejected" {
+    try testing.expect(!isThematicBreak("--- text"));
 }
 
 // -- helper unit tests: trimCodeSpan --
@@ -709,6 +785,60 @@ test "fenced code block — content is zero-copy" {
     const text_content = tree.fragment[0].element.children[0].element.children[0].text;
     try testing.expectEqualStrings("hello\n", text_content);
     try testing.expect(text_content.ptr == input.ptr + 4);
+}
+
+// -- parse: thematic breaks --
+
+test "thematic break — dashes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "---");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("hr", nodes[0].element.tag);
+    try testing.expectEqual(0, nodes[0].element.children.len);
+}
+
+test "thematic break — asterisks" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "***");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("hr", nodes[0].element.tag);
+}
+
+test "thematic break — underscores" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "___");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("hr", nodes[0].element.tag);
+}
+
+test "thematic break — between paragraphs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Above.\n\n---\n\nBelow.");
+    const nodes = try expectFragment(tree, 3);
+    try expectTextElement(nodes[0], "p", "Above.");
+    try testing.expectEqualStrings("hr", nodes[1].element.tag);
+    try expectTextElement(nodes[2], "p", "Below.");
+}
+
+test "thematic break — immediately after paragraph (no blank line)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Above.\n---");
+    const nodes = try expectFragment(tree, 2);
+    try expectTextElement(nodes[0], "p", "Above.");
+    try testing.expectEqualStrings("hr", nodes[1].element.tag);
+}
+
+test "thematic break — with spaces" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- - -");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("hr", nodes[0].element.tag);
 }
 
 // -- parse: inline code --
