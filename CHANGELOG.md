@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.3.0] — 2026-02-22
+
+### Features
+
+- Thematic breaks (`---`, `***`, `___`) rendered as `hr` elements
+
 ## [0.2.0] — 2026-02-22
 
 ### Features
