@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.7.0] — 2026-02-22
+
+### Features
+
+- Links `[text](url)` and images `![alt](src)` with optional quoted titles and balanced parentheses in URLs
+
 ## [0.6.0] — 2026-02-22
 
 ### Features
