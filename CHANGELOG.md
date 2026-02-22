@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.4.0] — 2026-02-22
+
+### Features
+
+- Blockquotes (`> `) with recursive inner parsing and nesting support
+
 ## [0.3.0] — 2026-02-22
 
 ### Features
