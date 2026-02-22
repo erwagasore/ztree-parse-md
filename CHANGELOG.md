@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.0] — 2026-02-22
+
+### Features
+
+- Unordered and ordered lists (`ul`, `ol`) with nesting via indentation
+- GFM task list markers (`- [x]`/`- [ ]`) with `checked` attribute
+
 ## [0.4.0] — 2026-02-22
 
 ### Features
