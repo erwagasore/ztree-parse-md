@@ -567,6 +567,51 @@ fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.Alloc
             } else {
                 pos += 1; // [ is literal
             }
+        } else if (content[pos] == '~') {
+            const tilde_start = pos;
+            while (pos < content.len and content[pos] == '~') pos += 1;
+            const tilde_count = pos - tilde_start;
+
+            if (tilde_count == 2 and pos < content.len and content[pos] != ' ') {
+                if (findExactRun(content, pos, '~', 2)) |close| {
+                    if (text_start < tilde_start) {
+                        try nodes.append(allocator, .{ .text = content[text_start..tilde_start] });
+                    }
+                    const inner = try parseInlines(allocator, content[pos..close]);
+                    try nodes.append(allocator, .{ .element = .{ .tag = "del", .attrs = &.{}, .children = inner } });
+                    pos = close + 2;
+                    text_start = pos;
+                }
+            }
+            // else: literal tildes, pos already advanced past them
+        } else if (content[pos] == '\n') {
+            // Check for hard line break
+            var break_start = pos;
+            var is_hard_break = false;
+
+            if (pos >= 2 and content[pos - 1] == ' ' and content[pos - 2] == ' ') {
+                // Two trailing spaces before newline
+                is_hard_break = true;
+                break_start = pos;
+                while (break_start > text_start and content[break_start - 1] == ' ') {
+                    break_start -= 1;
+                }
+            } else if (pos >= 1 and content[pos - 1] == '\\') {
+                // Backslash before newline
+                is_hard_break = true;
+                break_start = pos - 1;
+            }
+
+            if (is_hard_break) {
+                if (text_start < break_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..break_start] });
+                }
+                try nodes.append(allocator, .{ .element = .{ .tag = "br", .attrs = &.{}, .children = &.{} } });
+                pos += 1;
+                text_start = pos;
+            } else {
+                pos += 1; // soft break — \n stays as text
+            }
         } else {
             pos += 1;
         }
@@ -594,7 +639,7 @@ fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start:
 
     if (star_count == 3) {
         // ***text*** → em(strong(text))
-        if (findExactStarRun(content, after_stars, 3)) |close| {
+        if (findExactRun(content, after_stars, '*', 3)) |close| {
             const inner = try parseInlines(allocator, content[after_stars..close]);
             const strong_children = try allocator.alloc(Node, 1);
             strong_children[0] = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } };
@@ -607,7 +652,7 @@ fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start:
 
     if (star_count >= 2) {
         // **text** → strong(text)
-        if (findExactStarRun(content, after_stars, 2)) |close| {
+        if (findExactRun(content, after_stars, '*', 2)) |close| {
             const inner = try parseInlines(allocator, content[after_stars..close]);
             return .{
                 .node = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } },
@@ -618,7 +663,7 @@ fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start:
 
     if (star_count >= 1) {
         // *text* → em(text)
-        if (findExactStarRun(content, after_stars, 1)) |close| {
+        if (findExactRun(content, after_stars, '*', 1)) |close| {
             const inner = try parseInlines(allocator, content[after_stars..close]);
             return .{
                 .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = inner } },
@@ -630,14 +675,14 @@ fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start:
     return null;
 }
 
-/// Find a `*` run of exactly `count` length, starting search at `start`.
+/// Find a delimiter run of exactly `count` length, starting search at `start`.
 /// Skips runs preceded by a space (not valid closers).
-fn findExactStarRun(content: []const u8, start: usize, count: usize) ?usize {
+fn findExactRun(content: []const u8, start: usize, delimiter: u8, count: usize) ?usize {
     var pos = start;
     while (pos < content.len) {
-        if (content[pos] == '*') {
+        if (content[pos] == delimiter) {
             const run_start = pos;
-            while (pos < content.len and content[pos] == '*') pos += 1;
+            while (pos < content.len and content[pos] == delimiter) pos += 1;
             if (pos - run_start == count) {
                 // Skip if preceded by space
                 if (run_start > 0 and content[run_start - 1] == ' ') continue;
@@ -1715,6 +1760,115 @@ test "multiple emphasis spans" {
     try testing.expectEqualStrings("em", p.element.children[0].element.tag);
     try testing.expectEqualStrings(" and ", p.element.children[1].text);
     try testing.expectEqualStrings("em", p.element.children[2].element.tag);
+}
+
+// -- parse: strikethrough --
+
+test "strikethrough — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Hello ~~world~~");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("del", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("world", p.element.children[1].element.children[0].text);
+}
+
+test "strikethrough — with emphasis inside" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "~~**bold** strike~~");
+    const p = (try expectFragment(tree, 1))[0];
+    const del = p.element.children[0];
+    try testing.expectEqualStrings("del", del.element.tag);
+    try testing.expectEqual(2, del.element.children.len);
+    try testing.expectEqualStrings("strong", del.element.children[0].element.tag);
+    try testing.expectEqualStrings(" strike", del.element.children[1].text);
+}
+
+test "strikethrough — unmatched is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "a ~~ b");
+    const nodes = try expectFragment(tree, 1);
+    try expectTextElement(nodes[0], "p", "a ~~ b");
+}
+
+test "strikethrough — single tilde is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "a ~b~ c");
+    const nodes = try expectFragment(tree, 1);
+    try expectTextElement(nodes[0], "p", "a ~b~ c");
+}
+
+test "strikethrough — multiple spans" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "~~a~~ and ~~b~~");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("del", p.element.children[0].element.tag);
+    try testing.expectEqualStrings(" and ", p.element.children[1].text);
+    try testing.expectEqualStrings("del", p.element.children[2].element.tag);
+}
+
+// -- parse: line breaks --
+
+test "hard break — two trailing spaces" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "line1  \nline2");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("line1", p.element.children[0].text);
+    try testing.expectEqualStrings("br", p.element.children[1].element.tag);
+    try testing.expectEqual(0, p.element.children[1].element.children.len);
+    try testing.expectEqualStrings("line2", p.element.children[2].text);
+}
+
+test "hard break — backslash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "line1\\\nline2");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("line1", p.element.children[0].text);
+    try testing.expectEqualStrings("br", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("line2", p.element.children[2].text);
+}
+
+test "soft break — no br element" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "line1\nline2");
+    const p = (try expectFragment(tree, 1))[0];
+    // Soft break: \n stays as part of text, no br element
+    try testing.expectEqual(1, p.element.children.len);
+    try testing.expectEqualStrings("line1\nline2", p.element.children[0].text);
+}
+
+test "hard break — multiple trailing spaces" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "line1     \nline2");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("line1", p.element.children[0].text);
+    try testing.expectEqualStrings("br", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("line2", p.element.children[2].text);
+}
+
+test "hard break — with emphasis" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "*em*  \ntext");
+    const p = (try expectFragment(tree, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("em", p.element.children[0].element.tag);
+    try testing.expectEqualStrings("br", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("text", p.element.children[2].text);
 }
 
 // -- parse: links and images --
