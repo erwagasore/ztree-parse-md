@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.0] — 2026-02-22
+
+### Features
+
+- Fenced code blocks with optional language class (`pre > code`)
+- Inline code spans with single and multi-backtick matching
+
 ## [0.1.0] — 2026-02-22
 
 ### Features
