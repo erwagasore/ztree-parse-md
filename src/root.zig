@@ -13,12 +13,14 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) std.mem.Allocator.
 // Pass 1 — Block scanner
 // ---------------------------------------------------------------------------
 
-const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote };
+const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item };
 
 const Block = struct {
     tag: Tag,
     content: []const u8,
     lang: []const u8 = "",
+    indent: u8 = 0,
+    checked: ?bool = null,
 };
 
 /// Scan input line-by-line and produce a flat list of Block descriptors.
@@ -89,6 +91,20 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
                 para_start = null;
             }
             try blocks.append(allocator, .{ .tag = .hr, .content = "" });
+            continue;
+        }
+
+        if (classifyListItem(line)) |item| {
+            if (para_start) |start| {
+                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
+                para_start = null;
+            }
+            try blocks.append(allocator, .{
+                .tag = item.tag,
+                .content = item.content,
+                .indent = item.indent,
+                .checked = item.checked,
+            });
             continue;
         }
 
@@ -232,6 +248,66 @@ fn isThematicBreak(line: []const u8) bool {
     return count >= 3;
 }
 
+const ListItem = struct {
+    tag: Tag,
+    content: []const u8,
+    indent: u8,
+    checked: ?bool,
+};
+
+/// Classify a line as a list item. Supports `- `/`* ` (unordered) and `N. ` (ordered).
+/// Detects task list markers `[x]`/`[ ]` on unordered items.
+fn classifyListItem(line: []const u8) ?ListItem {
+    // Count leading spaces
+    var i: usize = 0;
+    while (i < line.len and line[i] == ' ') i += 1;
+    const indent: u8 = @intCast(i);
+
+    if (i >= line.len) return null;
+
+    var tag: Tag = undefined;
+    var content_start: usize = undefined;
+
+    // Unordered: - or * followed by space
+    if ((line[i] == '-' or line[i] == '*') and i + 1 < line.len and line[i + 1] == ' ') {
+        tag = .ul_item;
+        content_start = i + 2;
+    }
+    // Ordered: digits followed by . and space
+    else if (line[i] >= '0' and line[i] <= '9') {
+        var j = i;
+        while (j < line.len and line[j] >= '0' and line[j] <= '9') j += 1;
+        if (j < line.len and line[j] == '.' and j + 1 < line.len and line[j + 1] == ' ') {
+            tag = .ol_item;
+            content_start = j + 2;
+        } else {
+            return null;
+        }
+    } else {
+        return null;
+    }
+
+    const content = line[content_start..];
+
+    // Task list: [x] or [ ] after unordered marker
+    if (tag == .ul_item and content.len >= 3 and content[0] == '[') {
+        const mark = content[1];
+        if ((mark == 'x' or mark == ' ') and content[2] == ']') {
+            if (content.len == 3 or content[3] == ' ') {
+                const task_start: usize = if (content.len > 4) 4 else content.len;
+                return .{
+                    .tag = tag,
+                    .content = content[task_start..],
+                    .indent = indent,
+                    .checked = mark == 'x',
+                };
+            }
+        }
+    }
+
+    return .{ .tag = tag, .content = content, .indent = indent, .checked = null };
+}
+
 /// Strip the `> ` or `>` prefix from a blockquote line. Returns null if not a blockquote line.
 fn stripBlockquotePrefix(line: []const u8) ?[]const u8 {
     if (line.len == 0 or line[0] != '>') return null;
@@ -271,34 +347,119 @@ fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u
 fn buildTree(allocator: std.mem.Allocator, blocks: []const Block) std.mem.Allocator.Error!Node {
     if (blocks.len == 0) return .{ .fragment = &.{} };
 
-    const nodes = try allocator.alloc(Node, blocks.len);
-    for (blocks, 0..) |block, i| {
-        if (block.tag == .blockquote) {
+    var nodes: std.ArrayList(Node) = .empty;
+    var i: usize = 0;
+
+    while (i < blocks.len) {
+        const block = blocks[i];
+
+        if (block.tag == .ul_item or block.tag == .ol_item) {
+            const result = try buildList(allocator, blocks, i);
+            try nodes.append(allocator, result.node);
+            i = result.next;
+        } else if (block.tag == .blockquote) {
             const inner = try parse(allocator, block.content);
-            nodes[i] = .{ .element = .{
+            try nodes.append(allocator, .{ .element = .{
                 .tag = "blockquote",
                 .attrs = &.{},
                 .children = inner.fragment,
-            } };
+            } });
+            i += 1;
         } else if (block.tag == .hr) {
-            nodes[i] = .{ .element = .{
+            try nodes.append(allocator, .{ .element = .{
                 .tag = "hr",
                 .attrs = &.{},
                 .children = &.{},
-            } };
+            } });
+            i += 1;
         } else if (block.tag == .pre) {
-            nodes[i] = try buildCodeBlock(allocator, block);
+            try nodes.append(allocator, try buildCodeBlock(allocator, block));
+            i += 1;
         } else {
             const children = try parseInlines(allocator, block.content);
-            nodes[i] = .{ .element = .{
+            try nodes.append(allocator, .{ .element = .{
                 .tag = tagName(block.tag),
                 .attrs = &.{},
                 .children = children,
-            } };
+            } });
+            i += 1;
         }
     }
 
-    return .{ .fragment = nodes };
+    return .{ .fragment = try nodes.toOwnedSlice(allocator) };
+}
+
+const ListResult = struct {
+    node: Node,
+    next: usize,
+};
+
+/// Group consecutive list item blocks into a ul/ol element, handling nesting via indentation.
+fn buildList(allocator: std.mem.Allocator, blocks: []const Block, start: usize) std.mem.Allocator.Error!ListResult {
+    const base_indent = blocks[start].indent;
+    const base_tag = blocks[start].tag;
+    const list_tag: []const u8 = if (base_tag == .ul_item) "ul" else "ol";
+
+    var li_nodes: std.ArrayList(Node) = .empty;
+    var i = start;
+
+    while (i < blocks.len) {
+        const block = blocks[i];
+        // Stop if not a list item
+        if (block.tag != .ul_item and block.tag != .ol_item) break;
+        // Stop if indent decreased below base
+        if (block.indent < base_indent) break;
+        // Stop if type changed at same indent level
+        if (block.indent == base_indent and block.tag != base_tag) break;
+
+        if (block.indent > base_indent) {
+            // Nested list — build sub-list and attach to previous li
+            const sub = try buildList(allocator, blocks, i);
+            if (li_nodes.items.len > 0) {
+                const prev = &li_nodes.items[li_nodes.items.len - 1];
+                const old = prev.element.children;
+                const new_children = try allocator.alloc(Node, old.len + 1);
+                @memcpy(new_children[0..old.len], old);
+                new_children[old.len] = sub.node;
+                prev.* = .{ .element = .{
+                    .tag = "li",
+                    .attrs = prev.element.attrs,
+                    .children = new_children,
+                } };
+            }
+            i = sub.next;
+            continue;
+        }
+
+        // Same indent and type — new li
+        const inlines = try parseInlines(allocator, block.content);
+
+        const li_attrs: []const ztree.Attr = if (block.checked) |checked| blk: {
+            if (checked) {
+                const attrs = try allocator.alloc(ztree.Attr, 1);
+                attrs[0] = .{ .key = "checked", .value = null };
+                break :blk attrs;
+            }
+            break :blk &.{};
+        } else &.{};
+
+        try li_nodes.append(allocator, .{ .element = .{
+            .tag = "li",
+            .attrs = li_attrs,
+            .children = inlines,
+        } });
+
+        i += 1;
+    }
+
+    return .{
+        .node = .{ .element = .{
+            .tag = list_tag,
+            .attrs = &.{},
+            .children = try li_nodes.toOwnedSlice(allocator),
+        } },
+        .next = i,
+    };
 }
 
 /// Build a pre>code element, with optional class="language-X" on the code element.
@@ -417,6 +578,7 @@ fn tagName(tag: Tag) []const u8 {
         .pre => "pre",
         .hr => "hr",
         .blockquote => "blockquote",
+        .ul_item, .ol_item => "li",
     };
 }
 
@@ -553,6 +715,74 @@ test "isClosingFence — fewer backticks not a close" {
 
 test "isClosingFence — text after backticks not a close" {
     try testing.expect(!isClosingFence("``` foo", 3));
+}
+
+// -- helper unit tests: classifyListItem --
+
+test "classifyListItem — dash unordered" {
+    const item = classifyListItem("- hello").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("hello", item.content);
+    try testing.expectEqual(0, item.indent);
+    try testing.expectEqual(null, item.checked);
+}
+
+test "classifyListItem — asterisk unordered" {
+    const item = classifyListItem("* hello").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("hello", item.content);
+}
+
+test "classifyListItem — ordered" {
+    const item = classifyListItem("1. first").?;
+    try testing.expectEqual(.ol_item, item.tag);
+    try testing.expectEqualStrings("first", item.content);
+    try testing.expectEqual(0, item.indent);
+}
+
+test "classifyListItem — ordered multi-digit" {
+    const item = classifyListItem("12. twelfth").?;
+    try testing.expectEqual(.ol_item, item.tag);
+    try testing.expectEqualStrings("twelfth", item.content);
+}
+
+test "classifyListItem — indented" {
+    const item = classifyListItem("  - nested").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("nested", item.content);
+    try testing.expectEqual(2, item.indent);
+}
+
+test "classifyListItem — task checked" {
+    const item = classifyListItem("- [x] done").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("done", item.content);
+    try testing.expectEqual(true, item.checked.?);
+}
+
+test "classifyListItem — task unchecked" {
+    const item = classifyListItem("- [ ] todo").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("todo", item.content);
+    try testing.expectEqual(false, item.checked.?);
+}
+
+test "classifyListItem — not a list (no space after dash)" {
+    try testing.expectEqual(null, classifyListItem("-nope"));
+}
+
+test "classifyListItem — not a list (no space after dot)" {
+    try testing.expectEqual(null, classifyListItem("1.nope"));
+}
+
+test "classifyListItem — not a list (plain text)" {
+    try testing.expectEqual(null, classifyListItem("hello"));
+}
+
+test "classifyListItem — empty content" {
+    const item = classifyListItem("- ").?;
+    try testing.expectEqual(.ul_item, item.tag);
+    try testing.expectEqualStrings("", item.content);
 }
 
 // -- helper unit tests: stripBlockquotePrefix --
@@ -1022,6 +1252,135 @@ test "blockquote — with inline code" {
     try testing.expectEqualStrings("Use ", p.element.children[0].text);
     try testing.expectEqualStrings("code", p.element.children[1].element.tag);
     try testing.expectEqualStrings(" here.", p.element.children[2].text);
+}
+
+// -- parse: lists --
+
+test "unordered list — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Alpha\n- Beta\n- Gamma");
+    const nodes = try expectFragment(tree, 1);
+    const ul = nodes[0];
+    try testing.expectEqualStrings("ul", ul.element.tag);
+    try testing.expectEqual(3, ul.element.children.len);
+    try expectTextElement(ul.element.children[0], "li", "Alpha");
+    try expectTextElement(ul.element.children[1], "li", "Beta");
+    try expectTextElement(ul.element.children[2], "li", "Gamma");
+}
+
+test "ordered list — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "1. First\n2. Second");
+    const nodes = try expectFragment(tree, 1);
+    const ol = nodes[0];
+    try testing.expectEqualStrings("ol", ol.element.tag);
+    try testing.expectEqual(2, ol.element.children.len);
+    try expectTextElement(ol.element.children[0], "li", "First");
+    try expectTextElement(ol.element.children[1], "li", "Second");
+}
+
+test "list — between paragraphs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Before.\n\n- A\n- B\n\nAfter.");
+    const nodes = try expectFragment(tree, 3);
+    try expectTextElement(nodes[0], "p", "Before.");
+    try testing.expectEqualStrings("ul", nodes[1].element.tag);
+    try expectTextElement(nodes[2], "p", "After.");
+}
+
+test "list — asterisk marker" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "* One\n* Two");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("ul", nodes[0].element.tag);
+    try testing.expectEqual(2, nodes[0].element.children.len);
+}
+
+test "list — mixed types are separate lists" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Unordered\n1. Ordered");
+    const nodes = try expectFragment(tree, 2);
+    try testing.expectEqualStrings("ul", nodes[0].element.tag);
+    try testing.expectEqualStrings("ol", nodes[1].element.tag);
+}
+
+test "list — nested unordered" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Parent\n  - Child 1\n  - Child 2\n- Sibling");
+    const nodes = try expectFragment(tree, 1);
+    const ul = nodes[0];
+    try testing.expectEqualStrings("ul", ul.element.tag);
+    try testing.expectEqual(2, ul.element.children.len);
+    // First li has text + nested ul
+    const li1 = ul.element.children[0];
+    try testing.expectEqualStrings("li", li1.element.tag);
+    try testing.expectEqual(2, li1.element.children.len);
+    try testing.expectEqualStrings("Parent", li1.element.children[0].text);
+    try testing.expectEqualStrings("ul", li1.element.children[1].element.tag);
+    try testing.expectEqual(2, li1.element.children[1].element.children.len);
+    // Second li is plain
+    try expectTextElement(ul.element.children[1], "li", "Sibling");
+}
+
+test "list — nested ordered inside unordered" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Item\n  1. Sub one\n  2. Sub two");
+    const nodes = try expectFragment(tree, 1);
+    const li = nodes[0].element.children[0];
+    try testing.expectEqual(2, li.element.children.len);
+    try testing.expectEqualStrings("ol", li.element.children[1].element.tag);
+}
+
+test "list — task list" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- [x] Done\n- [ ] Todo\n- Regular");
+    const nodes = try expectFragment(tree, 1);
+    const ul = nodes[0];
+    try testing.expectEqual(3, ul.element.children.len);
+    // Checked item has checked attr
+    const done = ul.element.children[0];
+    try testing.expectEqual(1, done.element.attrs.len);
+    try testing.expectEqualStrings("checked", done.element.attrs[0].key);
+    try testing.expectEqual(null, done.element.attrs[0].value);
+    // Unchecked and regular have no attrs
+    try testing.expectEqual(0, ul.element.children[1].element.attrs.len);
+    try testing.expectEqual(0, ul.element.children[2].element.attrs.len);
+}
+
+test "list — with inline code" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Use `foo`");
+    const li = tree.fragment[0].element.children[0];
+    try testing.expectEqual(2, li.element.children.len);
+    try testing.expectEqualStrings("Use ", li.element.children[0].text);
+    try testing.expectEqualStrings("code", li.element.children[1].element.tag);
+}
+
+test "list — single item" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "- Solo");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("ul", nodes[0].element.tag);
+    try testing.expectEqual(1, nodes[0].element.children.len);
+}
+
+test "list — immediately after paragraph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Text.\n- Item");
+    const nodes = try expectFragment(tree, 2);
+    try expectTextElement(nodes[0], "p", "Text.");
+    try testing.expectEqualStrings("ul", nodes[1].element.tag);
 }
 
 // -- parse: inline code --
