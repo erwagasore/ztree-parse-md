@@ -17,6 +17,9 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     // Don't open emphasis if followed by space or at end of content
     if (after_delims >= content.len or content[after_delims] == ' ') return null;
 
+    // Underscore intra-word rule: _ cannot open emphasis when preceded by alphanumeric
+    if (delimiter == '_' and delim_start > 0 and std.ascii.isAlphanumeric(content[delim_start - 1])) return null;
+
     if (delim_count == 3) {
         // ***text*** → em(strong(text))
         if (findExactRun(content, after_delims, delimiter, 3)) |close| {
@@ -66,6 +69,8 @@ pub fn findExactRun(content: []const u8, start: usize, delimiter: u8, count: usi
             if (pos - run_start == count) {
                 // Skip if preceded by space
                 if (run_start > 0 and content[run_start - 1] == ' ') continue;
+                // Underscore intra-word rule: _ cannot close emphasis when followed by alphanumeric
+                if (delimiter == '_' and pos < content.len and std.ascii.isAlphanumeric(content[pos])) continue;
                 return run_start;
             }
         } else {
