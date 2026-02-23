@@ -24,6 +24,18 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
 
     var nodes: std.ArrayList(Node) = .empty;
     var footnotes: std.ArrayList(Block.Block) = .empty;
+    var ref_defs_list: std.ArrayList(Block.RefDef) = .empty;
+
+    // First pass: collect reference definitions
+    for (blocks) |block| {
+        if (block.tag == .ref_def) {
+            if (Block.classifyRefDef(block.content)) |r| {
+                try ref_defs_list.append(allocator, .{ .label = r.label, .url = r.url, .title = r.title });
+            }
+        }
+    }
+    const ref_defs = ref_defs_list.items;
+
     var i: usize = 0;
 
     while (i < blocks.len) {
@@ -32,12 +44,14 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
         if (block.tag == .footnote_def) {
             try footnotes.append(allocator, block);
             i += 1;
+        } else if (block.tag == .ref_def) {
+            i += 1; // skip — already collected
         } else if (block.tag == .ul_item or block.tag == .ol_item) {
-            const result = try buildList(allocator, blocks, i);
+            const result = try buildList(allocator, blocks, i, ref_defs);
             try nodes.append(allocator, result.node);
             i = result.next;
         } else if (block.tag == .table) {
-            try nodes.append(allocator, try buildTableNode(allocator, block.content));
+            try nodes.append(allocator, try buildTableNode(allocator, block.content, ref_defs));
             i += 1;
         } else if (block.tag == .blockquote) {
             const inner = try parseFn(allocator, block.content);
@@ -58,7 +72,7 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
             try nodes.append(allocator, try buildCodeBlock(allocator, block));
             i += 1;
         } else {
-            const children = try inlines.parseInlines(allocator, block.content);
+            const children = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
             try nodes.append(allocator, .{ .element = .{
                 .tag = Block.tagName(block.tag),
                 .attrs = &.{},
@@ -70,19 +84,19 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
 
     // Append footnotes section if any definitions exist
     if (footnotes.items.len > 0) {
-        try nodes.append(allocator, try buildFootnotesSection(allocator, footnotes.items));
+        try nodes.append(allocator, try buildFootnotesSection(allocator, footnotes.items, ref_defs));
     }
 
     return .{ .fragment = try nodes.toOwnedSlice(allocator) };
 }
 
 /// Build the footnotes section: section.footnotes > ol > li#fn-{id}
-fn buildFootnotesSection(allocator: std.mem.Allocator, footnotes: []const Block.Block) std.mem.Allocator.Error!Node {
+fn buildFootnotesSection(allocator: std.mem.Allocator, footnotes: []const Block.Block, ref_defs: []const Block.RefDef) std.mem.Allocator.Error!Node {
     var li_nodes: std.ArrayList(Node) = .empty;
 
     for (footnotes) |fn_block| {
         const id = fn_block.lang; // footnote id stored in lang field
-        const content_nodes = try inlines.parseInlines(allocator, fn_block.content);
+        const content_nodes = try inlines.parseInlinesWithRefs(allocator, fn_block.content, ref_defs);
 
         // Build back-reference: a(href="#fnref-{id}") with text "↩"
         const backref_href = try std.fmt.allocPrint(allocator, "#fnref-{s}", .{id});

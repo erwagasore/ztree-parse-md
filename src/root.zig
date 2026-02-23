@@ -1012,6 +1012,99 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
 }
 
+// -- parse: reference links --
+
+test "reflink — full reference [text][ref]" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Click [here][link].\n\n[link]: https://example.com");
+    const nodes = try expectFragment(t, 1);
+    const p = nodes[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Click ", p.element.children[0].text);
+    const a = p.element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("here", a.element.children[0].text);
+    try testing.expectEqualStrings(".", p.element.children[2].text);
+}
+
+test "reflink — collapsed reference [text][]" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Visit [example][].\n\n[example]: https://example.com");
+    const a = (try expectFragment(t, 1))[0].element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("example", a.element.children[0].text);
+}
+
+test "reflink — shortcut reference [text]" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "See [example].\n\n[example]: https://example.com");
+    const a = (try expectFragment(t, 1))[0].element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+}
+
+test "reflink — case insensitive" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "[Link][FOO]\n\n[foo]: https://example.com");
+    const a = (try expectFragment(t, 1))[0].element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+}
+
+test "reflink — with title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "[text][ref]\n\n[ref]: url \"My Title\"");
+    const a = (try expectFragment(t, 1))[0].element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqual(2, a.element.attrs.len);
+    try testing.expectEqualStrings("My Title", a.element.attrs[1].value.?);
+}
+
+test "reflink — image reference ![alt][ref]" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "![photo][img]\n\n[img]: pic.jpg \"Photo\"");
+    const img = (try expectFragment(t, 1))[0].element.children[0];
+    try testing.expectEqualStrings("img", img.element.tag);
+    try testing.expectEqualStrings("pic.jpg", img.element.attrs[0].value.?);
+    try testing.expectEqualStrings("photo", img.element.attrs[1].value.?);
+    try testing.expectEqualStrings("Photo", img.element.attrs[2].value.?);
+}
+
+test "reflink — undefined ref is literal text" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "[text][missing]");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "[text][missing]");
+}
+
+test "reflink — definition not rendered" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "[ref]: https://example.com\n\nA paragraph.");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("p", nodes[0].element.tag);
+    try testing.expectEqualStrings("A paragraph.", nodes[0].element.children[0].text);
+}
+
+test "reflink — multiple definitions" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "[a][1] and [b][2]\n\n[1]: url1\n[2]: url2");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("url1", p.element.children[0].element.attrs[0].value.?);
+    try testing.expectEqualStrings("url2", p.element.children[2].element.attrs[0].value.?);
+}
+
 // -- parse: footnotes --
 
 test "footnote — reference produces sup > a" {
