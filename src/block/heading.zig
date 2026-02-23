@@ -30,6 +30,28 @@ pub fn classifyHeading(line: []const u8) ?Heading {
     return .{ .tag = tag, .content = trimmed[content_start..] };
 }
 
+/// Classify a line as a setext heading underline.
+/// Returns .h1 for `===...` or .h2 for `---...`, null otherwise.
+/// The line must contain only the marker character (and optional leading/trailing spaces).
+pub fn classifySetextUnderline(line: []const u8) ?Block.Tag {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len == 0) return null;
+
+    const ch = trimmed[0];
+    if (ch != '=' and ch != '-') return null;
+
+    for (trimmed) |c| {
+        if (c != ch) return null;
+    }
+
+    // Need at least 1 char for = (any count works), and 1 for - but
+    // --- with 3+ is a thematic break which is checked earlier.
+    // Setext underlines need a preceding paragraph to be valid,
+    // so the caller handles that context.
+    if (ch == '=') return .h1;
+    return .h2;
+}
+
 // ---------------------------------------------------------------------------
 // Tests
 // ---------------------------------------------------------------------------
@@ -76,4 +98,26 @@ test "classifyHeading — lone hash" {
     const h = classifyHeading("#").?;
     try testing.expectEqual(.h1, h.tag);
     try testing.expectEqualStrings("", h.content);
+}
+
+test "classifySetextUnderline — equals h1" {
+    try testing.expectEqual(.h1, classifySetextUnderline("==="));
+    try testing.expectEqual(.h1, classifySetextUnderline("="));
+    try testing.expectEqual(.h1, classifySetextUnderline("  ===  "));
+}
+
+test "classifySetextUnderline — dashes h2" {
+    try testing.expectEqual(.h2, classifySetextUnderline("---"));
+    try testing.expectEqual(.h2, classifySetextUnderline("-"));
+    try testing.expectEqual(.h2, classifySetextUnderline("  ---  "));
+}
+
+test "classifySetextUnderline — mixed chars not valid" {
+    try testing.expectEqual(null, classifySetextUnderline("=-="));
+    try testing.expectEqual(null, classifySetextUnderline("==-"));
+}
+
+test "classifySetextUnderline — empty" {
+    try testing.expectEqual(null, classifySetextUnderline(""));
+    try testing.expectEqual(null, classifySetextUnderline("   "));
 }
