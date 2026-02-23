@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.10.0] — 2026-02-23
+
+### Features
+
+- Escape sequences (`\*`, `\[`, `\~`, `\\`, etc.) — backslash before punctuation produces the literal character
+- Underscore emphasis: `_em_`, `__strong__`, `___em+strong___`
+- Autolinks: `<https://url>` → clickable `a` element
+
+### Other
+
+- Split monolithic `src/root.zig` into `block/`, `inlines/`, and `tree/` modules (17 files)
+
 ## [0.9.0] — 2026-02-23
 
 ### Features
