@@ -1,6 +1,7 @@
 /// Reference link definition — `[label]: url "optional title"`.
 
 const std = @import("std");
+const shared = @import("../utils.zig");
 
 pub const RefDef = struct {
     label: []const u8,
@@ -81,17 +82,9 @@ fn parseTitle(content: []const u8) ?[]const u8 {
 /// Case-insensitive label lookup.
 pub fn findRefDef(ref_defs: []const RefDef, label: []const u8) ?RefDef {
     for (ref_defs) |def| {
-        if (eqlCaseInsensitive(def.label, label)) return def;
+        if (shared.eqlIgnoreCase(def.label, label)) return def;
     }
     return null;
-}
-
-fn eqlCaseInsensitive(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ac, bc| {
-        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
-    }
-    return true;
 }
 
 // ---------------------------------------------------------------------------

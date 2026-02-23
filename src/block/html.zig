@@ -1,5 +1,6 @@
 /// HTML block detection — raw HTML blocks preserved as-is.
 const std = @import("std");
+const shared = @import("../utils.zig");
 
 /// Check if a line starts an HTML block.
 /// Returns true for lines starting with `<tag`, `</tag`, or `<!--`.
@@ -51,24 +52,9 @@ fn isBlockLevelTag(name: []const u8) bool {
         "tfoot", "th", "thead", "title", "tr", "track", "ul",
     };
     for (block_tags) |tag| {
-        if (eqlIgnoreCase(name, tag)) return true;
+        if (shared.eqlIgnoreCase(name, tag)) return true;
     }
     return false;
-}
-
-fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ac, bc| {
-        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
-    }
-    return true;
-}
-
-/// Check if a line ends an HTML block (blank line).
-/// HTML blocks type 6/7 end at a blank line.
-pub fn isHtmlBlockEnd(line: []const u8) bool {
-    const trimmed = std.mem.trim(u8, line, " \t\r");
-    return trimmed.len == 0;
 }
 
 // ---------------------------------------------------------------------------

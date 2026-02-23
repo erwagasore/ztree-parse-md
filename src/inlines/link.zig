@@ -80,7 +80,7 @@ fn buildLinkNode(allocator: std.mem.Allocator, text: []const u8, url: []const u8
         if (title) |t| {
             attrs[1] = .{ .key = "title", .value = t };
         }
-        const children = try inlines.parseInlinesWithRefs(allocator, text, ref_defs);
+        const children = try inlines.parseInlines(allocator, text, ref_defs);
         return .{
             .node = .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } },
             .end = end,
