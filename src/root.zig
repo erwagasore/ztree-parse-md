@@ -1012,6 +1012,145 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
 }
 
+// -- parse: escape sequences --
+
+test "escape — star not emphasis" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "\\*not italic\\*");
+    const p = (try expectFragment(t, 1))[0];
+    // Produces: "*not italic" then "*" (backslashes stripped, stars literal)
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("*not italic", p.element.children[0].text);
+    try testing.expectEqualStrings("*", p.element.children[1].text);
+}
+
+test "escape — backslash before bracket" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "\\[not a link\\]");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("[not a link", p.element.children[0].text);
+    try testing.expectEqualStrings("]", p.element.children[1].text);
+}
+
+test "escape — tilde not strikethrough" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "\\~\\~not deleted\\~\\~");
+    const p = (try expectFragment(t, 1))[0];
+    // Each \~ produces a segment break: "~" "~not deleted" "~" "~"
+    try testing.expectEqual(4, p.element.children.len);
+    try testing.expectEqualStrings("~", p.element.children[0].text);
+    try testing.expectEqualStrings("~not deleted", p.element.children[1].text);
+}
+
+test "escape — backslash before non-punctuation is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "\\n is not an escape");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "\\n is not an escape");
+}
+
+test "escape — double backslash" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "\\\\visible backslash");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(1, p.element.children.len);
+    try testing.expectEqualStrings("\\visible backslash", p.element.children[0].text);
+}
+
+// -- parse: underscore emphasis --
+
+test "em — underscore" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Hello _world_");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("em", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("world", p.element.children[1].element.children[0].text);
+}
+
+test "strong — underscore" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Hello __world__");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("strong", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("world", p.element.children[1].element.children[0].text);
+}
+
+test "em+strong — triple underscore" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "___bold italic___");
+    const p = (try expectFragment(t, 1))[0];
+    const em = p.element.children[0];
+    try testing.expectEqualStrings("em", em.element.tag);
+    try testing.expectEqualStrings("strong", em.element.children[0].element.tag);
+    try testing.expectEqualStrings("bold italic", em.element.children[0].element.children[0].text);
+}
+
+test "mixed star and underscore emphasis" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "*star* and _under_");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("em", p.element.children[0].element.tag);
+    try testing.expectEqualStrings(" and ", p.element.children[1].text);
+    try testing.expectEqualStrings("em", p.element.children[2].element.tag);
+}
+
+// -- parse: autolinks --
+
+test "autolink — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Visit <https://example.com> now.");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Visit ", p.element.children[0].text);
+    const a = p.element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("href", a.element.attrs[0].key);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("https://example.com", a.element.children[0].text);
+    try testing.expectEqualStrings(" now.", p.element.children[2].text);
+}
+
+test "autolink — not without scheme" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "<not-a-link>");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "<not-a-link>");
+}
+
+test "autolink — ftp scheme" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "<ftp://files.example.com>");
+    const a = (try expectFragment(t, 1))[0].element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("ftp://files.example.com", a.element.attrs[0].value.?);
+}
+
+test "autolink — no spaces allowed" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "<https://not a link>");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "<https://not a link>");
+}
+
 // -- parse: inline code --
 
 test "inline code in paragraph" {

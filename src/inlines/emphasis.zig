@@ -9,17 +9,17 @@ pub const EmphasisResult = struct {
     end: usize,
 };
 
-/// Try to build an emphasis node from a star run. Returns null if no matching close found.
-pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_start: usize, star_count: usize) std.mem.Allocator.Error!?EmphasisResult {
-    const after_stars = star_start + star_count;
+/// Try to build an emphasis node from a delimiter run (* or _). Returns null if no matching close found.
+pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_start: usize, delim_count: usize, delimiter: u8) std.mem.Allocator.Error!?EmphasisResult {
+    const after_delims = delim_start + delim_count;
 
     // Don't open emphasis if followed by space or at end of content
-    if (after_stars >= content.len or content[after_stars] == ' ') return null;
+    if (after_delims >= content.len or content[after_delims] == ' ') return null;
 
-    if (star_count == 3) {
+    if (delim_count == 3) {
         // ***text*** → em(strong(text))
-        if (findExactRun(content, after_stars, '*', 3)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_stars..close]);
+        if (findExactRun(content, after_delims, delimiter, 3)) |close| {
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
             const strong_children = try allocator.alloc(Node, 1);
             strong_children[0] = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } };
             return .{
@@ -29,10 +29,10 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_st
         }
     }
 
-    if (star_count >= 2) {
+    if (delim_count >= 2) {
         // **text** → strong(text)
-        if (findExactRun(content, after_stars, '*', 2)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_stars..close]);
+        if (findExactRun(content, after_delims, delimiter, 2)) |close| {
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
             return .{
                 .node = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } },
                 .end = close + 2,
@@ -40,10 +40,10 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, star_st
         }
     }
 
-    if (star_count >= 1) {
+    if (delim_count >= 1) {
         // *text* → em(text)
-        if (findExactRun(content, after_stars, '*', 1)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_stars..close]);
+        if (findExactRun(content, after_delims, delimiter, 1)) |close| {
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
             return .{
                 .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = inner } },
                 .end = close + 1,

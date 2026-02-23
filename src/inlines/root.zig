@@ -24,7 +24,16 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
     var pos: usize = 0;
 
     while (pos < content.len) {
-        if (content[pos] == '`') {
+        if (content[pos] == '\\' and pos + 1 < content.len and isEscapable(content[pos + 1])) {
+            // Backslash escape — flush text before the backslash, skip it,
+            // and let the escaped char start a new text run.
+            if (text_start < pos) {
+                try nodes.append(allocator, .{ .text = content[text_start..pos] });
+            }
+            pos += 1; // skip backslash
+            text_start = pos; // escaped char becomes start of next text run
+            pos += 1; // advance past escaped char
+        } else if (content[pos] == '`') {
             // Count opening backticks
             const open_start = pos;
             while (pos < content.len and content[pos] == '`') pos += 1;
@@ -51,22 +60,23 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
                 text_start = pos;
             }
             // No matching close — backticks are literal text, pos already advanced past them.
-        } else if (content[pos] == '*') {
-            // Count opening stars
-            const star_start = pos;
-            while (pos < content.len and content[pos] == '*') pos += 1;
-            const star_count = pos - star_start;
+        } else if (content[pos] == '*' or content[pos] == '_') {
+            // Count opening delimiter run (* or _)
+            const delim = content[pos];
+            const delim_start = pos;
+            while (pos < content.len and content[pos] == delim) pos += 1;
+            const delim_count = pos - delim_start;
 
-            if (try handleEmphasis(allocator, content, star_start, star_count)) |result| {
+            if (try handleEmphasis(allocator, content, delim_start, delim_count, delim)) |result| {
                 // Flush pending text
-                if (text_start < star_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..star_start] });
+                if (text_start < delim_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..delim_start] });
                 }
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
             }
-            // No match — stars are literal text, pos already advanced past them.
+            // No match — delimiters are literal text, pos already advanced past them.
         } else if (content[pos] == '!' and pos + 1 < content.len and content[pos + 1] == '[') {
             const marker_start = pos;
             if (try handleLinkOrImage(allocator, content, pos, true)) |result| {
@@ -90,6 +100,22 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
                 text_start = pos;
             } else {
                 pos += 1; // [ is literal
+            }
+        } else if (content[pos] == '<') {
+            // Autolink: <scheme://...>
+            if (findAutolink(content, pos)) |result| {
+                if (text_start < pos) {
+                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
+                }
+                const attrs = try allocator.alloc(ztree.Attr, 1);
+                attrs[0] = .{ .key = "href", .value = result.url };
+                const children = try allocator.alloc(Node, 1);
+                children[0] = .{ .text = result.url };
+                try nodes.append(allocator, .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } });
+                pos = result.end;
+                text_start = pos;
+            } else {
+                pos += 1; // < is literal
             }
         } else if (content[pos] == '~') {
             const tilde_start = pos;
@@ -147,6 +173,35 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
     }
 
     return try nodes.toOwnedSlice(allocator);
+}
+
+const AutolinkResult = struct {
+    url: []const u8,
+    end: usize,
+};
+
+/// Detect an autolink `<scheme://...>` at the given position.
+fn findAutolink(content: []const u8, pos: usize) ?AutolinkResult {
+    if (pos >= content.len or content[pos] != '<') return null;
+    const start = pos + 1;
+
+    // Find closing >
+    const close = std.mem.indexOfScalar(u8, content[start..], '>') orelse return null;
+    const url = content[start .. start + close];
+
+    // Must contain :// (scheme separator) and no spaces
+    if (std.mem.indexOf(u8, url, "://") == null) return null;
+    if (std.mem.indexOfScalar(u8, url, ' ') != null) return null;
+
+    return .{ .url = url, .end = start + close + 1 };
+}
+
+/// CommonMark escapable punctuation characters.
+fn isEscapable(c: u8) bool {
+    return switch (c) {
+        '\\', '`', '*', '_', '{', '}', '[', ']', '(', ')', '#', '+', '-', '.', '!', '|', '~', '"' => true,
+        else => false,
+    };
 }
 
 // Force sub-module tests to be included
