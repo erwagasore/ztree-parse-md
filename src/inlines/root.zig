@@ -18,14 +18,11 @@ pub const findClosingBackticks = code.findClosingBackticks;
 pub const trimCodeSpan = code.trimCodeSpan;
 
 const Block = @import("../block/root.zig");
+const shared = @import("../utils.zig");
 
 /// Parse inline Markdown within a leaf block's content.
-pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const Node {
-    return parseInlinesWithRefs(allocator, content, &.{});
-}
-
-/// Parse inline Markdown with reference link definitions available for resolution.
-pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error![]const Node {
+/// Accepts optional reference link definitions for resolution.
+pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error![]const Node {
     var nodes: std.ArrayList(Node) = .empty;
     var text_start: usize = 0;
     var pos: usize = 0;
@@ -34,9 +31,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
         if (content[pos] == '\\' and pos + 1 < content.len and isEscapable(content[pos + 1])) {
             // Backslash escape — flush text before the backslash, skip it,
             // and let the escaped char start a new text run.
-            if (text_start < pos) {
-                try nodes.append(allocator, .{ .text = content[text_start..pos] });
-            }
+            try shared.flushText(&nodes, allocator, content, text_start, pos);
             pos += 1; // skip backslash
             text_start = pos; // escaped char becomes start of next text run
             pos += 1; // advance past escaped char
@@ -48,10 +43,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
 
             // Find matching closing backticks (same count)
             if (findClosingBackticks(content, pos, open_count)) |close_start| {
-                // Flush pending text
-                if (text_start < open_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..open_start] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, open_start);
 
                 // Build code span
                 const raw_code = content[pos..close_start];
@@ -75,10 +67,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
             const delim_count = pos - delim_start;
 
             if (try handleEmphasis(allocator, content, delim_start, delim_count, delim, ref_defs)) |result| {
-                // Flush pending text
-                if (text_start < delim_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..delim_start] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, delim_start);
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
@@ -87,9 +76,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
         } else if (content[pos] == '!' and pos + 1 < content.len and content[pos + 1] == '[') {
             const marker_start = pos;
             if (try handleLinkOrImage(allocator, content, pos, true, ref_defs)) |result| {
-                if (text_start < marker_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, marker_start);
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
@@ -100,16 +87,12 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
             const marker_start = pos;
             // Try footnote reference [^id] first
             if (try handleFootnoteRef(allocator, content, pos)) |result| {
-                if (text_start < marker_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, marker_start);
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
             } else if (try handleLinkOrImage(allocator, content, pos, false, ref_defs)) |result| {
-                if (text_start < marker_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, marker_start);
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
@@ -119,21 +102,12 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
         } else if (content[pos] == '<') {
             // Autolink: <scheme://...>
             if (findAutolink(content, pos)) |result| {
-                if (text_start < pos) {
-                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
-                }
-                const attrs = try allocator.alloc(ztree.Attr, 1);
-                attrs[0] = .{ .key = "href", .value = result.url };
-                const children = try allocator.alloc(Node, 1);
-                children[0] = .{ .text = result.url };
-                try nodes.append(allocator, .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } });
+                try shared.flushText(&nodes, allocator, content, text_start, pos);
+                try nodes.append(allocator, try shared.buildAutolinkNode(allocator, result.url));
                 pos = result.end;
                 text_start = pos;
             } else if (findInlineHtml(content, pos)) |html_end| {
-                // Inline HTML tag — preserve as raw
-                if (text_start < pos) {
-                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, pos);
                 try nodes.append(allocator, .{ .raw = content[pos..html_end] });
                 pos = html_end;
                 text_start = pos;
@@ -147,10 +121,8 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
 
             if (tilde_count == 2 and pos < content.len and content[pos] != ' ') {
                 if (findExactRun(content, pos, '~', 2)) |close| {
-                    if (text_start < tilde_start) {
-                        try nodes.append(allocator, .{ .text = content[text_start..tilde_start] });
-                    }
-                    const inner = try parseInlinesWithRefs(allocator, content[pos..close], ref_defs);
+                    try shared.flushText(&nodes, allocator, content, text_start, tilde_start);
+                    const inner = try parseInlines(allocator, content[pos..close], ref_defs);
                     try nodes.append(allocator, .{ .element = .{ .tag = "del", .attrs = &.{}, .children = inner } });
                     pos = close + 2;
                     text_start = pos;
@@ -160,9 +132,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
         } else if (content[pos] == '&') {
             // HTML entity reference
             if (resolveEntity(content, pos)) |entity| {
-                if (text_start < pos) {
-                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
-                }
+                try shared.flushText(&nodes, allocator, content, text_start, pos);
                 // Allocate decoded string on the arena so it outlives this function
                 const decoded = try allocator.alloc(u8, entity.decoded.len);
                 @memcpy(decoded, entity.decoded);
@@ -191,10 +161,8 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
             }
 
             if (is_hard_break) {
-                if (text_start < break_start) {
-                    try nodes.append(allocator, .{ .text = content[text_start..break_start] });
-                }
-                try nodes.append(allocator, .{ .element = .{ .tag = "br", .attrs = &.{}, .children = &.{} } });
+                try shared.flushText(&nodes, allocator, content, text_start, break_start);
+                try nodes.append(allocator, shared.makeVoidElement(allocator, "br", &.{}));
                 pos += 1;
                 text_start = pos;
             } else {
@@ -204,15 +172,8 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
             // GFM extended autolink: bare https:// or http:// URLs
             // Skip if preceded by < (that's angle-bracket autolink syntax)
             if (findBareUrl(content, pos)) |url_end| {
-                if (text_start < pos) {
-                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
-                }
-                const url = content[pos..url_end];
-                const attrs = try allocator.alloc(ztree.Attr, 1);
-                attrs[0] = .{ .key = "href", .value = url };
-                const children = try allocator.alloc(Node, 1);
-                children[0] = .{ .text = url };
-                try nodes.append(allocator, .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } });
+                try shared.flushText(&nodes, allocator, content, text_start, pos);
+                try nodes.append(allocator, try shared.buildAutolinkNode(allocator, content[pos..url_end]));
                 pos = url_end;
                 text_start = pos;
             } else {
@@ -224,9 +185,7 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
     }
 
     // Flush remaining text
-    if (text_start < content.len) {
-        try nodes.append(allocator, .{ .text = content[text_start..] });
-    }
+    try shared.flushText(&nodes, allocator, content, text_start, content.len);
 
     return try nodes.toOwnedSlice(allocator);
 }
@@ -416,17 +375,9 @@ fn isKnownHtmlTag(name: []const u8) bool {
         "head", "body", "html", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "pre",
     };
     for (tags) |tag| {
-        if (eqlIgnoreCase(name, tag)) return true;
+        if (shared.eqlIgnoreCase(name, tag)) return true;
     }
     return false;
-}
-
-fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
-    if (a.len != b.len) return false;
-    for (a, b) |ac, bc| {
-        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
-    }
-    return true;
 }
 
 /// Detect a bare URL (GFM extended autolink) starting at pos.

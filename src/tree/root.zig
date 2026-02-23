@@ -77,7 +77,7 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
             try nodes.append(allocator, try buildCodeBlock(allocator, block));
             i += 1;
         } else {
-            const children = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
+            const children = try inlines.parseInlines(allocator, block.content, ref_defs);
             try nodes.append(allocator, .{ .element = .{
                 .tag = Block.tagName(block.tag),
                 .attrs = &.{},
@@ -101,7 +101,7 @@ fn buildFootnotesSection(allocator: std.mem.Allocator, footnotes: []const Block.
 
     for (footnotes) |fn_block| {
         const id = fn_block.lang; // footnote id stored in lang field
-        const content_nodes = try inlines.parseInlinesWithRefs(allocator, fn_block.content, ref_defs);
+        const content_nodes = try inlines.parseInlines(allocator, fn_block.content, ref_defs);
 
         // Build back-reference: a(href="#fnref-{id}") with text "↩"
         const backref_href = try std.fmt.allocPrint(allocator, "#fnref-{s}", .{id});

@@ -106,7 +106,7 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
             } });
         } else {
             // Tight list: inline content directly in li
-            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
+            const inline_nodes = try inlines.parseInlines(allocator, block.content, ref_defs);
             try li_nodes.append(allocator, .{ .element = .{
                 .tag = "li",
                 .attrs = li_attrs,
@@ -135,7 +135,7 @@ fn buildLooseItemChildren(allocator: std.mem.Allocator, content: []const u8, ref
     while (rest.len > 0) {
         if (std.mem.indexOf(u8, rest, "\n\n")) |sep| {
             const para_content = rest[0..sep];
-            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, para_content, ref_defs);
+            const inline_nodes = try inlines.parseInlines(allocator, para_content, ref_defs);
             try paras.append(allocator, .{ .element = .{
                 .tag = "p",
                 .attrs = &.{},
@@ -143,7 +143,7 @@ fn buildLooseItemChildren(allocator: std.mem.Allocator, content: []const u8, ref
             } });
             rest = rest[sep + 2 ..];
         } else {
-            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, rest, ref_defs);
+            const inline_nodes = try inlines.parseInlines(allocator, rest, ref_defs);
             try paras.append(allocator, .{ .element = .{
                 .tag = "p",
                 .attrs = &.{},

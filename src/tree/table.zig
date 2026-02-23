@@ -69,7 +69,7 @@ fn parseTableRow(allocator: std.mem.Allocator, raw_line: []const u8, aligns: []c
         // Skip trailing empty segment
         if (pos >= trimmed.len and cell_content.len == 0) break;
 
-        const children = try inlines.parseInlinesWithRefs(allocator, cell_content, ref_defs);
+        const children = try inlines.parseInlines(allocator, cell_content, ref_defs);
 
         const col_align = if (col < aligns.len) aligns[col] else Align.none;
         const attrs: []const ztree.Attr = if (col_align != .none) blk: {

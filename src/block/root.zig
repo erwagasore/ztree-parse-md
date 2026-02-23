@@ -11,7 +11,7 @@ const tbl = @import("table.zig");
 const footnote = @import("footnote.zig");
 const refdef = @import("refdef.zig");
 const html = @import("html.zig");
-const utils = @import("utils.zig");
+const shared = @import("../utils.zig");
 
 // Re-exports for external use
 pub const classifyHeading = heading.classifyHeading;
@@ -29,7 +29,7 @@ pub const classifyRefDef = refdef.classifyRefDef;
 pub const RefDef = refdef.RefDef;
 pub const findRefDef = refdef.findRefDef;
 pub const isHtmlBlockStart = html.isHtmlBlockStart;
-pub const joinLines = utils.joinLines;
+pub const joinLines = shared.joinLines;
 
 pub const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table, footnote_def, ref_def, html_block, blank };
 
@@ -41,6 +41,14 @@ pub const Block = struct {
     checked: ?bool = null,
     loose: bool = false,
 };
+
+/// Flush any pending paragraph into the blocks list.
+fn flushParagraph(blocks: *std.ArrayList(Block), allocator: std.mem.Allocator, input: []const u8, para_start: *?usize, para_end: usize) !void {
+    if (para_start.*) |start| {
+        try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
+        para_start.* = null;
+    }
+}
 
 /// Scan input line-by-line and produce a flat list of Block descriptors.
 pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
@@ -66,9 +74,9 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
     var pos: usize = 0;
     while (pos < input.len) {
         const line_start = pos;
-        const line_end = if (std.mem.indexOfScalar(u8, input[pos..], '\n')) |nl| pos + nl else input.len;
+        const line_end = shared.nextLineEnd(input, pos);
         const raw_line = input[line_start..line_end];
-        pos = if (line_end < input.len) line_end + 1 else input.len;
+        pos = shared.nextLineStart(input, line_end);
 
         if (in_fence) {
             if (isClosingFence(raw_line, fence_backtick_count)) {
@@ -84,10 +92,7 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
 
         // Blockquote line — collect stripped lines
         if (stripBlockquotePrefix(raw_line)) |stripped| {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             try bq_lines.append(allocator, stripped);
             continue;
         }
@@ -100,10 +105,7 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
         }
 
         if (isBlankLine(raw_line)) {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             // Emit blank marker so tree builder can detect loose lists
             try blocks.append(allocator, .{ .tag = .blank, .content = "" });
             continue;
@@ -126,19 +128,13 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
         }
 
         if (isThematicBreak(raw_line)) {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             try blocks.append(allocator, .{ .tag = .hr, .content = "" });
             continue;
         }
 
         if (classifyListItem(raw_line)) |item| {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             try blocks.append(allocator, .{
                 .tag = item.tag,
                 .content = item.content,
@@ -150,17 +146,15 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
             // blank line followed by indented continuation (indent >= marker + 2)
             const continuation_indent = item.indent + 2;
             while (pos < input.len) {
-                const look_start = pos;
-                const look_end = if (std.mem.indexOfScalar(u8, input[pos..], '\n')) |nl| pos + nl else input.len;
-                const look_line = input[look_start..look_end];
+                const look_end = shared.nextLineEnd(input, pos);
+                const look_line = input[pos..look_end];
 
                 if (isBlankLine(look_line)) {
-                    const after_blank = if (look_end < input.len) look_end + 1 else input.len;
+                    const after_blank = shared.nextLineStart(input, look_end);
                     // Check if next line is indented continuation
                     if (after_blank >= input.len) break;
-                    const cont_start = after_blank;
-                    const cont_end = if (std.mem.indexOfScalar(u8, input[after_blank..], '\n')) |nl| after_blank + nl else input.len;
-                    const cont_line = input[cont_start..cont_end];
+                    const cont_end = shared.nextLineEnd(input, after_blank);
+                    const cont_line = input[after_blank..cont_end];
 
                     // Count leading spaces
                     var spaces: usize = 0;
@@ -175,7 +169,7 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
                         // Join with previous content using \n\n separator
                         const joined = try std.fmt.allocPrint(allocator, "{s}\n\n{s}", .{ prev.content, cont_content });
                         prev.content = joined;
-                        pos = if (cont_end < input.len) cont_end + 1 else input.len;
+                        pos = shared.nextLineStart(input, cont_end);
                     } else {
                         break; // Not continuation — don't consume blank line
                     }
@@ -187,10 +181,7 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
         }
 
         if (classifyFenceOpen(raw_line)) |f| {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             in_fence = true;
             fence_backtick_count = f.backtick_count;
             fence_lang = f.lang;
@@ -199,47 +190,34 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
         }
 
         if (classifyFootnoteDef(raw_line)) |f| {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             try blocks.append(allocator, .{ .tag = .footnote_def, .content = f.content, .lang = f.id });
             continue;
         }
 
         if (classifyRefDef(raw_line) != null) {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .ref_def, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             // Store raw line so tree builder can re-parse label/url/title
             try blocks.append(allocator, .{ .tag = .ref_def, .content = raw_line });
             continue;
         }
 
         if (classifyHeading(raw_line)) |h| {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             try blocks.append(allocator, .{ .tag = h.tag, .content = h.content });
             continue;
         }
 
         // HTML block — starts with block-level tag, ends at blank line
         if (isHtmlBlockStart(raw_line)) {
-            if (para_start) |start| {
-                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-                para_start = null;
-            }
+            try flushParagraph(&blocks, allocator, input, &para_start, para_end);
             const html_start = line_start;
             var html_end = line_end;
             // Collect lines until blank line or end of input
             while (pos < input.len) {
-                const next_start = pos;
-                const next_end = if (std.mem.indexOfScalar(u8, input[pos..], '\n')) |nl| pos + nl else input.len;
-                const next_line = input[next_start..next_end];
-                pos = if (next_end < input.len) next_end + 1 else input.len;
+                const next_end = shared.nextLineEnd(input, pos);
+                const next_line = input[pos..next_end];
+                pos = shared.nextLineStart(input, next_end);
                 if (isBlankLine(next_line)) break;
                 html_end = next_end;
             }
@@ -248,39 +226,10 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
         }
 
         // Indented code block — 4+ spaces, only when no paragraph is being accumulated
-        if (para_start == null and !in_table and raw_line.len >= 4 and
-            raw_line[0] == ' ' and raw_line[1] == ' ' and raw_line[2] == ' ' and raw_line[3] == ' ')
-        {
-            // Collect consecutive indented lines
-            var code_lines: std.ArrayList([]const u8) = .empty;
-            // Strip 4 leading spaces from current line
-            try code_lines.append(allocator, raw_line[4..]);
-
-            // Continue collecting indented or blank lines
-            while (pos < input.len) {
-                const next_start = pos;
-                const next_end = if (std.mem.indexOfScalar(u8, input[pos..], '\n')) |nl| pos + nl else input.len;
-                const next_line = input[next_start..next_end];
-
-                if (next_line.len >= 4 and next_line[0] == ' ' and next_line[1] == ' ' and next_line[2] == ' ' and next_line[3] == ' ') {
-                    try code_lines.append(allocator, next_line[4..]);
-                    pos = if (next_end < input.len) next_end + 1 else input.len;
-                } else if (isBlankLine(next_line)) {
-                    // Blank lines within indented code are kept
-                    try code_lines.append(allocator, "");
-                    pos = if (next_end < input.len) next_end + 1 else input.len;
-                } else {
-                    break; // Non-indented, non-blank line ends the block
-                }
-            }
-
-            // Trim trailing blank lines
-            while (code_lines.items.len > 0 and code_lines.items[code_lines.items.len - 1].len == 0) {
-                _ = code_lines.pop();
-            }
-
-            const code_content = try joinLines(allocator, code_lines.items);
-            try blocks.append(allocator, .{ .tag = .pre, .content = code_content });
+        if (para_start == null and !in_table and isIndentedCodeLine(raw_line)) {
+            const result = try collectIndentedCode(allocator, input, raw_line, pos);
+            try blocks.append(allocator, .{ .tag = .pre, .content = result.content });
+            pos = result.new_pos;
             continue;
         }
 
@@ -328,9 +277,7 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
     }
 
     // Flush trailing paragraph
-    if (para_start) |start| {
-        try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
-    }
+    try flushParagraph(&blocks, allocator, input, &para_start, para_end);
 
     // Unclosed fence — content runs to end of input
     if (in_fence) {
@@ -342,6 +289,51 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
     }
 
     return try blocks.toOwnedSlice(allocator);
+}
+
+// ---------------------------------------------------------------------------
+// Extracted block collectors
+// ---------------------------------------------------------------------------
+
+fn isIndentedCodeLine(raw: []const u8) bool {
+    return raw.len >= 4 and raw[0] == ' ' and raw[1] == ' ' and raw[2] == ' ' and raw[3] == ' ';
+}
+
+const CollectResult = struct {
+    content: []const u8,
+    new_pos: usize,
+};
+
+/// Collect consecutive indented (4+ space) lines into a code block.
+fn collectIndentedCode(allocator: std.mem.Allocator, input: []const u8, first_line: []const u8, start_pos: usize) !CollectResult {
+    var code_lines: std.ArrayList([]const u8) = .empty;
+    try code_lines.append(allocator, first_line[4..]);
+
+    var pos = start_pos;
+    while (pos < input.len) {
+        const next_end = shared.nextLineEnd(input, pos);
+        const next_line = input[pos..next_end];
+
+        if (isIndentedCodeLine(next_line)) {
+            try code_lines.append(allocator, next_line[4..]);
+            pos = shared.nextLineStart(input, next_end);
+        } else if (isBlankLine(next_line)) {
+            try code_lines.append(allocator, "");
+            pos = shared.nextLineStart(input, next_end);
+        } else {
+            break;
+        }
+    }
+
+    // Trim trailing blank lines
+    while (code_lines.items.len > 0 and code_lines.items[code_lines.items.len - 1].len == 0) {
+        _ = code_lines.pop();
+    }
+
+    return .{
+        .content = try shared.joinLines(allocator, code_lines.items),
+        .new_pos = pos,
+    };
 }
 
 /// Map a block tag to its HTML element name.

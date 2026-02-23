@@ -23,7 +23,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count == 3) {
         // ***text*** → em(strong(text))
         if (findExactRun(content, after_delims, delimiter, 3)) |close| {
-            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close], ref_defs);
             const strong_children = try allocator.alloc(Node, 1);
             strong_children[0] = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } };
             return .{
@@ -36,7 +36,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count >= 2) {
         // **text** → strong(text)
         if (findExactRun(content, after_delims, delimiter, 2)) |close| {
-            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close], ref_defs);
             return .{
                 .node = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } },
                 .end = close + 2,
@@ -47,7 +47,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count >= 1) {
         // *text* → em(text)
         if (findExactRun(content, after_delims, delimiter, 1)) |close| {
-            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
+            const inner = try inlines.parseInlines(allocator, content[after_delims..close], ref_defs);
             return .{
                 .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = inner } },
                 .end = close + 1,
