@@ -13,7 +13,7 @@ pub fn parse(allocator: std.mem.Allocator, input: []const u8) std.mem.Allocator.
 // Pass 1 — Block scanner
 // ---------------------------------------------------------------------------
 
-const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item };
+const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table };
 
 const Block = struct {
     tag: Tag,
@@ -38,6 +38,11 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
 
     // Blockquote state
     var bq_lines: std.ArrayList([]const u8) = .empty;
+
+    // Table state
+    var in_table = false;
+    var table_start: usize = 0;
+    var table_end: usize = 0;
 
     var pos: usize = 0;
     while (pos < input.len) {
@@ -130,6 +135,33 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
             continue;
         }
 
+        // Table body rows — continue collecting while in table mode
+        if (in_table) {
+            if (isTableRow(line)) {
+                table_end = line_end;
+                continue;
+            } else {
+                // End table
+                try blocks.append(allocator, .{ .tag = .table, .content = input[table_start..table_end] });
+                in_table = false;
+                // Fall through to process this line normally
+            }
+        }
+
+        // Table separator — check if previous paragraph line is a header
+        if (!in_table and isTableSeparator(line)) {
+            if (para_start) |start| {
+                const header = input[start..para_end];
+                if (std.mem.indexOfScalar(u8, header, '\n') == null and std.mem.indexOfScalar(u8, header, '|') != null) {
+                    table_start = start;
+                    table_end = line_end;
+                    in_table = true;
+                    para_start = null;
+                    continue;
+                }
+            }
+        }
+
         // Paragraph line
         if (para_start == null) {
             para_start = line_start;
@@ -141,6 +173,11 @@ fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Block {
     if (bq_lines.items.len > 0) {
         const inner = try joinLines(allocator, bq_lines.items);
         try blocks.append(allocator, .{ .tag = .blockquote, .content = inner });
+    }
+
+    // Flush trailing table
+    if (in_table) {
+        try blocks.append(allocator, .{ .tag = .table, .content = input[table_start..table_end] });
     }
 
     // Flush trailing paragraph
@@ -315,6 +352,29 @@ fn stripBlockquotePrefix(line: []const u8) ?[]const u8 {
     return line[1..];
 }
 
+/// Check if a line is a GFM table separator (e.g. `| --- | :---: |`).
+fn isTableSeparator(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    if (trimmed.len < 3) return false;
+    var has_dash = false;
+    var has_pipe = false;
+    for (trimmed) |c| {
+        switch (c) {
+            '-' => has_dash = true,
+            '|' => has_pipe = true,
+            ':', ' ' => {},
+            else => return false,
+        }
+    }
+    return has_dash and has_pipe;
+}
+
+/// Check if a line looks like a table row (contains a pipe character).
+fn isTableRow(line: []const u8) bool {
+    const trimmed = std.mem.trim(u8, line, " \t");
+    return trimmed.len > 0 and std.mem.indexOfScalar(u8, trimmed, '|') != null;
+}
+
 /// Join slices with newline separators into a single allocated buffer.
 fn joinLines(allocator: std.mem.Allocator, lines: []const []const u8) ![]const u8 {
     if (lines.len == 0) return "";
@@ -364,6 +424,9 @@ fn buildTree(allocator: std.mem.Allocator, blocks: []const Block) std.mem.Alloca
                 .attrs = &.{},
                 .children = inner.fragment,
             } });
+            i += 1;
+        } else if (block.tag == .table) {
+            try nodes.append(allocator, try buildTableNode(allocator, block.content));
             i += 1;
         } else if (block.tag == .hr) {
             try nodes.append(allocator, .{ .element = .{
@@ -489,6 +552,128 @@ fn buildCodeBlock(allocator: std.mem.Allocator, block: Block) !Node {
         .attrs = &.{},
         .children = pre_children,
     } };
+}
+
+const Align = enum { none, left, center, right };
+
+/// Build a table element from the raw table content (header + separator + body rows).
+fn buildTableNode(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error!Node {
+    var lines: std.ArrayList([]const u8) = .empty;
+    var lpos: usize = 0;
+    while (lpos < content.len) {
+        const end = std.mem.indexOfScalar(u8, content[lpos..], '\n');
+        const line_end = if (end) |e| lpos + e else content.len;
+        try lines.append(allocator, content[lpos..line_end]);
+        lpos = if (line_end < content.len) line_end + 1 else content.len;
+    }
+
+    if (lines.items.len < 2) return .{ .fragment = &.{} };
+
+    const header_line = lines.items[0];
+    const sep_line = lines.items[1];
+
+    // Parse alignment from separator
+    const aligns = try parseAlignments(allocator, sep_line);
+
+    // Build thead
+    const header_cells = try parseTableRow(allocator, header_line, aligns, "th");
+    const header_tr = try allocator.alloc(Node, 1);
+    header_tr[0] = .{ .element = .{ .tag = "tr", .attrs = &.{}, .children = header_cells } };
+    const thead = try allocator.alloc(Node, 1);
+    thead[0] = .{ .element = .{ .tag = "thead", .attrs = &.{}, .children = header_tr } };
+
+    // Build tbody
+    if (lines.items.len > 2) {
+        var body_rows: std.ArrayList(Node) = .empty;
+        for (lines.items[2..]) |row_line| {
+            const row_cells = try parseTableRow(allocator, row_line, aligns, "td");
+            try body_rows.append(allocator, .{ .element = .{ .tag = "tr", .attrs = &.{}, .children = row_cells } });
+        }
+
+        const table_children = try allocator.alloc(Node, 2);
+        table_children[0] = thead[0];
+        table_children[1] = .{ .element = .{ .tag = "tbody", .attrs = &.{}, .children = try body_rows.toOwnedSlice(allocator) } };
+        return .{ .element = .{ .tag = "table", .attrs = &.{}, .children = table_children } };
+    }
+
+    return .{ .element = .{ .tag = "table", .attrs = &.{}, .children = thead } };
+}
+
+/// Parse a table row into cells (th or td elements) with alignment attributes.
+fn parseTableRow(allocator: std.mem.Allocator, line: []const u8, aligns: []const Align, cell_tag: []const u8) std.mem.Allocator.Error![]const Node {
+    var nodes: std.ArrayList(Node) = .empty;
+    const trimmed = std.mem.trim(u8, line, " \t");
+
+    var pos: usize = 0;
+    // Skip leading |
+    if (pos < trimmed.len and trimmed[pos] == '|') pos += 1;
+
+    var col: usize = 0;
+    while (pos < trimmed.len) {
+        const cell_start = pos;
+        while (pos < trimmed.len and trimmed[pos] != '|') pos += 1;
+        const raw_cell = trimmed[cell_start..pos];
+        const cell_content = std.mem.trim(u8, raw_cell, " \t");
+
+        // Skip trailing empty segment
+        if (pos >= trimmed.len and cell_content.len == 0) break;
+
+        const children = try parseInlines(allocator, cell_content);
+
+        const col_align = if (col < aligns.len) aligns[col] else Align.none;
+        const attrs: []const ztree.Attr = if (col_align != .none) blk: {
+            const a = try allocator.alloc(ztree.Attr, 1);
+            a[0] = .{ .key = "style", .value = switch (col_align) {
+                .left => "text-align: left",
+                .center => "text-align: center",
+                .right => "text-align: right",
+                .none => unreachable,
+            } };
+            break :blk a;
+        } else &.{};
+
+        try nodes.append(allocator, .{ .element = .{ .tag = cell_tag, .attrs = attrs, .children = children } });
+        col += 1;
+        if (pos < trimmed.len) pos += 1; // skip |
+    }
+
+    return try nodes.toOwnedSlice(allocator);
+}
+
+/// Parse alignment specifiers from the separator row.
+fn parseAlignments(allocator: std.mem.Allocator, sep: []const u8) std.mem.Allocator.Error![]const Align {
+    var aligns: std.ArrayList(Align) = .empty;
+    const trimmed = std.mem.trim(u8, sep, " \t");
+
+    var pos: usize = 0;
+    // Skip leading |
+    if (pos < trimmed.len and trimmed[pos] == '|') pos += 1;
+
+    while (pos < trimmed.len) {
+        // Find next |
+        const cell_start = pos;
+        while (pos < trimmed.len and trimmed[pos] != '|') pos += 1;
+        const cell = std.mem.trim(u8, trimmed[cell_start..pos], " \t");
+
+        if (cell.len > 0) {
+            const starts_colon = cell[0] == ':';
+            const ends_colon = cell[cell.len - 1] == ':';
+
+            if (starts_colon and ends_colon) {
+                try aligns.append(allocator, .center);
+            } else if (ends_colon) {
+                try aligns.append(allocator, .right);
+            } else if (starts_colon) {
+                try aligns.append(allocator, .left);
+            } else {
+                try aligns.append(allocator, .none);
+            }
+        }
+
+        if (pos < trimmed.len) pos += 1; // skip |
+    }
+
+    return try aligns.toOwnedSlice(allocator);
 }
 
 /// Parse inline Markdown within a leaf block's content. Currently handles:
@@ -830,6 +1015,7 @@ fn tagName(tag: Tag) []const u8 {
         .hr => "hr",
         .blockquote => "blockquote",
         .ul_item, .ol_item => "li",
+        .table => "table",
     };
 }
 
@@ -1760,6 +1946,132 @@ test "multiple emphasis spans" {
     try testing.expectEqualStrings("em", p.element.children[0].element.tag);
     try testing.expectEqualStrings(" and ", p.element.children[1].text);
     try testing.expectEqualStrings("em", p.element.children[2].element.tag);
+}
+
+// -- parse: tables --
+
+test "table — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| A | B |\n| --- | --- |\n| 1 | 2 |");
+    const nodes = try expectFragment(tree, 1);
+    const table = nodes[0];
+    try testing.expectEqualStrings("table", table.element.tag);
+    try testing.expectEqual(2, table.element.children.len);
+
+    // thead
+    const thead = table.element.children[0];
+    try testing.expectEqualStrings("thead", thead.element.tag);
+    const header_row = thead.element.children[0];
+    try testing.expectEqualStrings("tr", header_row.element.tag);
+    try testing.expectEqual(2, header_row.element.children.len);
+    try testing.expectEqualStrings("th", header_row.element.children[0].element.tag);
+    try testing.expectEqualStrings("A", header_row.element.children[0].element.children[0].text);
+    try testing.expectEqualStrings("th", header_row.element.children[1].element.tag);
+    try testing.expectEqualStrings("B", header_row.element.children[1].element.children[0].text);
+
+    // tbody
+    const tbody = table.element.children[1];
+    try testing.expectEqualStrings("tbody", tbody.element.tag);
+    const body_row = tbody.element.children[0];
+    try testing.expectEqualStrings("tr", body_row.element.tag);
+    try testing.expectEqual(2, body_row.element.children.len);
+    try testing.expectEqualStrings("td", body_row.element.children[0].element.tag);
+    try testing.expectEqualStrings("1", body_row.element.children[0].element.children[0].text);
+    try testing.expectEqualStrings("td", body_row.element.children[1].element.tag);
+    try testing.expectEqualStrings("2", body_row.element.children[1].element.children[0].text);
+}
+
+test "table — multiple body rows" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| H |\n| --- |\n| r1 |\n| r2 |\n| r3 |");
+    const table = (try expectFragment(tree, 1))[0];
+    const tbody = table.element.children[1];
+    try testing.expectEqual(3, tbody.element.children.len);
+    try testing.expectEqualStrings("r1", tbody.element.children[0].element.children[0].element.children[0].text);
+    try testing.expectEqualStrings("r2", tbody.element.children[1].element.children[0].element.children[0].text);
+    try testing.expectEqualStrings("r3", tbody.element.children[2].element.children[0].element.children[0].text);
+}
+
+test "table — alignment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| L | C | R | N |\n| :--- | :---: | ---: | --- |\n| a | b | c | d |");
+    const table = (try expectFragment(tree, 1))[0];
+
+    // Check th alignment attrs
+    const ths = table.element.children[0].element.children[0].element.children;
+    try testing.expectEqual(1, ths[0].element.attrs.len);
+    try testing.expectEqualStrings("text-align: left", ths[0].element.attrs[0].value.?);
+    try testing.expectEqual(1, ths[1].element.attrs.len);
+    try testing.expectEqualStrings("text-align: center", ths[1].element.attrs[0].value.?);
+    try testing.expectEqual(1, ths[2].element.attrs.len);
+    try testing.expectEqualStrings("text-align: right", ths[2].element.attrs[0].value.?);
+    try testing.expectEqual(0, ths[3].element.attrs.len);
+
+    // Check td alignment attrs
+    const tds = table.element.children[1].element.children[0].element.children;
+    try testing.expectEqualStrings("text-align: left", tds[0].element.attrs[0].value.?);
+    try testing.expectEqualStrings("text-align: center", tds[1].element.attrs[0].value.?);
+    try testing.expectEqualStrings("text-align: right", tds[2].element.attrs[0].value.?);
+    try testing.expectEqual(0, tds[3].element.attrs.len);
+}
+
+test "table — header only (no body)" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| H1 | H2 |\n| --- | --- |");
+    const table = (try expectFragment(tree, 1))[0];
+    try testing.expectEqualStrings("table", table.element.tag);
+    try testing.expectEqual(1, table.element.children.len); // only thead
+    try testing.expectEqualStrings("thead", table.element.children[0].element.tag);
+}
+
+test "table — inline formatting in cells" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| Name |\n| --- |\n| **bold** |");
+    const td = (try expectFragment(tree, 1))[0].element.children[1].element.children[0].element.children[0];
+    try testing.expectEqualStrings("td", td.element.tag);
+    try testing.expectEqualStrings("strong", td.element.children[0].element.tag);
+}
+
+test "table — followed by paragraph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| A |\n| --- |\n| 1 |\n\nAfter table.");
+    const nodes = try expectFragment(tree, 2);
+    try testing.expectEqualStrings("table", nodes[0].element.tag);
+    try expectTextElement(nodes[1], "p", "After table.");
+}
+
+test "table — preceded by paragraph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "Before.\n\n| A |\n| --- |\n| 1 |");
+    const nodes = try expectFragment(tree, 2);
+    try expectTextElement(nodes[0], "p", "Before.");
+    try testing.expectEqualStrings("table", nodes[1].element.tag);
+}
+
+test "table — not a table without separator" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const tree = try parse(arena.allocator(), "| just a line |");
+    const nodes = try expectFragment(tree, 1);
+    try testing.expectEqualStrings("p", nodes[0].element.tag);
+}
+
+// -- helper unit tests: isTableSeparator --
+
+test "isTableSeparator — basic" {
+    try testing.expect(isTableSeparator("| --- | --- |"));
+    try testing.expect(isTableSeparator("|---|---|"));
+    try testing.expect(isTableSeparator("| :--- | :---: | ---: |"));
+    try testing.expect(!isTableSeparator("not a separator"));
+    try testing.expect(!isTableSeparator("| abc | def |"));
+    try testing.expect(!isTableSeparator("---"));
 }
 
 // -- parse: strikethrough --
