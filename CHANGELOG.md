@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.0] — 2026-02-23
+
+### Features
+
+- Intra-word underscore rules: `foo_bar_baz` stays literal — underscores only open/close emphasis at word boundaries (CommonMark compliant)
+- Nested mixed emphasis: `*foo **bar** baz*` correctly produces `em` wrapping `strong`
+- HTML entity references: named (`&amp;`, `&lt;`, `&gt;`, `&quot;`, `&apos;`, `&nbsp;`, `&copy;`, `&mdash;`, `&ndash;`, `&hellip;`) and numeric (`&#38;`, `&#x26;`) entities decoded to literal characters
+
 ## [0.12.0] — 2026-02-23
 
 ### Features
