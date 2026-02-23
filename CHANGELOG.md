@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.11.0] — 2026-02-23
+
+### Features
+
+- Footnotes: `[^id]` inline references → `sup > a`, `[^id]: content` definitions → `section.footnotes > ol > li` with back-reference links
+- Reference links: full `[text][ref]`, collapsed `[text][]`, and shortcut `[text]` forms with `[ref]: url "title"` definitions
+- Image references: `![alt][ref]` with same resolution rules
+- Case-insensitive label matching for reference links
+- Reference definitions support angle-bracket URLs and double/single/paren title styles
+
 ## [0.10.0] — 2026-02-23
 
 ### Features
