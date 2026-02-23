@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0] — 2026-02-22
+
+### Features
+
+- GFM strikethrough `~~text~~` → `del` element with recursive inner parsing
+- Hard line breaks via two trailing spaces or backslash before newline → `br` element
+
 ## [0.7.0] — 2026-02-22
 
 ### Features
