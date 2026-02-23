@@ -315,13 +315,13 @@ test "thematic break — between paragraphs" {
     try expectTextElement(nodes[2], "p", "Below.");
 }
 
-test "thematic break — immediately after paragraph (no blank line)" {
+test "thematic break — immediately after paragraph becomes setext h2" {
+    // Per CommonMark: --- after a paragraph is a setext heading underline, not a thematic break
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const t = try parse(arena.allocator(), "Above.\n---");
-    const nodes = try expectFragment(t, 2);
-    try expectTextElement(nodes[0], "p", "Above.");
-    try testing.expectEqualStrings("hr", nodes[1].element.tag);
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "h2", "Above.");
 }
 
 test "thematic break — with spaces" {
@@ -1010,6 +1010,124 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[0].element.tag);
     try testing.expectEqualStrings(" and ", p.element.children[1].text);
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
+}
+
+// -- parse: setext headings --
+
+test "setext h1 — equals underline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Heading One\n===");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "h1", "Heading One");
+}
+
+test "setext h2 — dashes underline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Heading Two\n---");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "h2", "Heading Two");
+}
+
+test "setext h1 — long underline" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Title\n==========");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "h1", "Title");
+}
+
+test "setext — with inline formatting" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Hello **world**\n===");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("h1", nodes[0].element.tag);
+    try testing.expectEqual(2, nodes[0].element.children.len);
+    try testing.expectEqualStrings("Hello ", nodes[0].element.children[0].text);
+    try testing.expectEqualStrings("strong", nodes[0].element.children[1].element.tag);
+}
+
+test "setext — standalone --- is thematic break" {
+    // --- without a preceding paragraph is a thematic break
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Above.\n\n---");
+    const nodes = try expectFragment(t, 2);
+    try expectTextElement(nodes[0], "p", "Above.");
+    try testing.expectEqualStrings("hr", nodes[1].element.tag);
+}
+
+test "setext — after blank line is thematic break" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "---");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("hr", nodes[0].element.tag);
+}
+
+// -- parse: indented code blocks --
+
+test "indented code — basic" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "    code line");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("pre", nodes[0].element.tag);
+    const code_el = nodes[0].element.children[0];
+    try testing.expectEqualStrings("code", code_el.element.tag);
+    try testing.expectEqualStrings("code line", code_el.element.children[0].text);
+}
+
+test "indented code — multiple lines" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "    line 1\n    line 2\n    line 3");
+    const nodes = try expectFragment(t, 1);
+    const code_el = nodes[0].element.children[0];
+    try testing.expectEqualStrings("code", code_el.element.tag);
+    try testing.expectEqualStrings("line 1\nline 2\nline 3", code_el.element.children[0].text);
+}
+
+test "indented code — with blank line" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "    line 1\n\n    line 2");
+    const nodes = try expectFragment(t, 1);
+    const code_el = nodes[0].element.children[0];
+    try testing.expectEqualStrings("line 1\n\nline 2", code_el.element.children[0].text);
+}
+
+test "indented code — not in paragraph" {
+    // Text followed by indented code (with blank line separation)
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Text.\n\n    code");
+    const nodes = try expectFragment(t, 2);
+    try expectTextElement(nodes[0], "p", "Text.");
+    try testing.expectEqualStrings("pre", nodes[1].element.tag);
+}
+
+test "indented code — no lang attribute" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "    x = 1");
+    const pre = (try expectFragment(t, 1))[0];
+    // Indented code has no language, just pre > code > text
+    try testing.expectEqualStrings("pre", pre.element.tag);
+    const code_el = pre.element.children[0];
+    try testing.expectEqual(0, code_el.element.attrs.len);
+}
+
+test "indented code — trailing blank lines stripped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "    code\n\n\nAfter.");
+    const nodes = try expectFragment(t, 2);
+    const code_el = nodes[0].element.children[0];
+    try testing.expectEqualStrings("code", code_el.element.children[0].text);
+    try expectTextElement(nodes[1], "p", "After.");
 }
 
 // -- parse: reference links --

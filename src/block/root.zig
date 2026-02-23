@@ -14,6 +14,7 @@ const utils = @import("utils.zig");
 
 // Re-exports for external use
 pub const classifyHeading = heading.classifyHeading;
+pub const classifySetextUnderline = heading.classifySetextUnderline;
 pub const classifyFenceOpen = fence.classifyFenceOpen;
 pub const isClosingFence = fence.isClosingFence;
 pub const classifyListItem = list.classifyListItem;
@@ -103,6 +104,22 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
             continue;
         }
 
+        // Setext heading underline — only valid when there's a pending paragraph
+        // Must check before thematic break so `---` under text becomes h2, not hr
+        if (para_start != null) {
+            if (classifySetextUnderline(raw_line)) |setext_tag| {
+                const start = para_start.?;
+                // Only single-line paragraph becomes a setext heading
+                // (multi-line would be ambiguous)
+                const para_content = input[start..para_end];
+                if (std.mem.indexOfScalar(u8, para_content, '\n') == null) {
+                    try blocks.append(allocator, .{ .tag = setext_tag, .content = para_content });
+                    para_start = null;
+                    continue;
+                }
+            }
+        }
+
         if (isThematicBreak(raw_line)) {
             if (para_start) |start| {
                 try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
@@ -163,6 +180,43 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
                 para_start = null;
             }
             try blocks.append(allocator, .{ .tag = h.tag, .content = h.content });
+            continue;
+        }
+
+        // Indented code block — 4+ spaces, only when no paragraph is being accumulated
+        if (para_start == null and !in_table and raw_line.len >= 4 and
+            raw_line[0] == ' ' and raw_line[1] == ' ' and raw_line[2] == ' ' and raw_line[3] == ' ')
+        {
+            // Collect consecutive indented lines
+            var code_lines: std.ArrayList([]const u8) = .empty;
+            // Strip 4 leading spaces from current line
+            try code_lines.append(allocator, raw_line[4..]);
+
+            // Continue collecting indented or blank lines
+            while (pos < input.len) {
+                const next_start = pos;
+                const next_end = if (std.mem.indexOfScalar(u8, input[pos..], '\n')) |nl| pos + nl else input.len;
+                const next_line = input[next_start..next_end];
+
+                if (next_line.len >= 4 and next_line[0] == ' ' and next_line[1] == ' ' and next_line[2] == ' ' and next_line[3] == ' ') {
+                    try code_lines.append(allocator, next_line[4..]);
+                    pos = if (next_end < input.len) next_end + 1 else input.len;
+                } else if (isBlankLine(next_line)) {
+                    // Blank lines within indented code are kept
+                    try code_lines.append(allocator, "");
+                    pos = if (next_end < input.len) next_end + 1 else input.len;
+                } else {
+                    break; // Non-indented, non-blank line ends the block
+                }
+            }
+
+            // Trim trailing blank lines
+            while (code_lines.items.len > 0 and code_lines.items[code_lines.items.len - 1].len == 0) {
+                _ = code_lines.pop();
+            }
+
+            const code_content = try joinLines(allocator, code_lines.items);
+            try blocks.append(allocator, .{ .tag = .pre, .content = code_content });
             continue;
         }
 
