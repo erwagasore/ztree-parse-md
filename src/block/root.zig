@@ -8,6 +8,7 @@ const list = @import("list.zig");
 const line = @import("line.zig");
 const blockquote = @import("blockquote.zig");
 const tbl = @import("table.zig");
+const footnote = @import("footnote.zig");
 const utils = @import("utils.zig");
 
 // Re-exports for external use
@@ -20,9 +21,10 @@ pub const isThematicBreak = line.isThematicBreak;
 pub const stripBlockquotePrefix = blockquote.stripBlockquotePrefix;
 pub const isTableSeparator = tbl.isTableSeparator;
 pub const isTableRow = tbl.isTableRow;
+pub const classifyFootnoteDef = footnote.classifyFootnoteDef;
 pub const joinLines = utils.joinLines;
 
-pub const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table };
+pub const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table, footnote_def };
 
 pub const Block = struct {
     tag: Tag,
@@ -132,6 +134,15 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
             continue;
         }
 
+        if (classifyFootnoteDef(raw_line)) |f| {
+            if (para_start) |start| {
+                try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
+                para_start = null;
+            }
+            try blocks.append(allocator, .{ .tag = .footnote_def, .content = f.content, .lang = f.id });
+            continue;
+        }
+
         if (classifyHeading(raw_line)) |h| {
             if (para_start) |start| {
                 try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
@@ -216,6 +227,7 @@ pub fn tagName(tag: Tag) []const u8 {
         .blockquote => "blockquote",
         .ul_item, .ol_item => "li",
         .table => "table",
+        .footnote_def => "li",
     };
 }
 
@@ -227,4 +239,5 @@ comptime {
     _ = line;
     _ = blockquote;
     _ = tbl;
+    _ = footnote;
 }

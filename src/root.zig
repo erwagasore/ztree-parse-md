@@ -1012,6 +1012,90 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
 }
 
+// -- parse: footnotes --
+
+test "footnote — reference produces sup > a" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Text[^1] here.\n\n[^1]: The footnote.");
+    const nodes = try expectFragment(t, 2); // paragraph + section
+    const p = nodes[0];
+    try testing.expectEqualStrings("p", p.element.tag);
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Text", p.element.children[0].text);
+    // sup > a
+    const sup = p.element.children[1];
+    try testing.expectEqualStrings("sup", sup.element.tag);
+    const a = sup.element.children[0];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("#fn-1", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("fnref-1", a.element.attrs[1].value.?);
+    try testing.expectEqualStrings("1", a.element.children[0].text);
+    try testing.expectEqualStrings(" here.", p.element.children[2].text);
+}
+
+test "footnote — section at end" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Text[^1].\n\n[^1]: Note content.");
+    const nodes = try expectFragment(t, 2);
+    const section = nodes[1];
+    try testing.expectEqualStrings("section", section.element.tag);
+    try testing.expectEqualStrings("class", section.element.attrs[0].key);
+    try testing.expectEqualStrings("footnotes", section.element.attrs[0].value.?);
+    // section > ol > li
+    const ol = section.element.children[0];
+    try testing.expectEqualStrings("ol", ol.element.tag);
+    const li = ol.element.children[0];
+    try testing.expectEqualStrings("li", li.element.tag);
+    try testing.expectEqualStrings("id", li.element.attrs[0].key);
+    try testing.expectEqualStrings("fn-1", li.element.attrs[0].value.?);
+    // li content + backref
+    try testing.expectEqualStrings("Note content.", li.element.children[0].text);
+    try testing.expectEqualStrings(" ", li.element.children[1].text);
+    const backref = li.element.children[2];
+    try testing.expectEqualStrings("a", backref.element.tag);
+    try testing.expectEqualStrings("#fnref-1", backref.element.attrs[0].value.?);
+    try testing.expectEqualStrings("↩", backref.element.children[0].text);
+}
+
+test "footnote — multiple footnotes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "A[^1] and B[^note].\n\n[^1]: First.\n[^note]: Second.");
+    const nodes = try expectFragment(t, 2);
+    const ol = nodes[1].element.children[0];
+    try testing.expectEqual(2, ol.element.children.len);
+    try testing.expectEqualStrings("fn-1", ol.element.children[0].element.attrs[0].value.?);
+    try testing.expectEqualStrings("fn-note", ol.element.children[1].element.attrs[0].value.?);
+}
+
+test "footnote — named label" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "See[^ref].\n\n[^ref]: Details here.");
+    const nodes = try expectFragment(t, 2);
+    const sup = nodes[0].element.children[1];
+    try testing.expectEqualStrings("ref", sup.element.children[0].element.children[0].text);
+}
+
+test "footnote — no definitions means no section" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Just a paragraph.");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("p", nodes[0].element.tag);
+}
+
+test "footnote — inline formatting in definition" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Text[^1].\n\n[^1]: A **bold** note.");
+    const li = (try expectFragment(t, 2))[1].element.children[0].element.children[0];
+    try testing.expectEqualStrings("A ", li.element.children[0].text);
+    try testing.expectEqualStrings("strong", li.element.children[1].element.tag);
+}
+
 // -- parse: escape sequences --
 
 test "escape — star not emphasis" {

@@ -91,7 +91,15 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
             }
         } else if (content[pos] == '[') {
             const marker_start = pos;
-            if (try handleLinkOrImage(allocator, content, pos, false)) |result| {
+            // Try footnote reference [^id] first
+            if (try handleFootnoteRef(allocator, content, pos)) |result| {
+                if (text_start < marker_start) {
+                    try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
+                }
+                try nodes.append(allocator, result.node);
+                pos = result.end;
+                text_start = pos;
+            } else if (try handleLinkOrImage(allocator, content, pos, false)) |result| {
                 if (text_start < marker_start) {
                     try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
                 }
@@ -173,6 +181,42 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
     }
 
     return try nodes.toOwnedSlice(allocator);
+}
+
+/// Detect a footnote reference `[^id]` at the given position.
+/// Produces: sup > a(href="#fn-{id}", id="fnref-{id}") with text = id
+fn handleFootnoteRef(allocator: std.mem.Allocator, content: []const u8, pos: usize) std.mem.Allocator.Error!?link.LinkResult {
+    // Must start with [^
+    if (pos + 2 >= content.len or content[pos] != '[' or content[pos + 1] != '^') return null;
+
+    // Find closing ]
+    const id_start = pos + 2;
+    var id_end = id_start;
+    while (id_end < content.len and content[id_end] != ']') id_end += 1;
+    if (id_end >= content.len or id_end == id_start) return null; // no ] or empty id
+    // Must not have ( after ] — that would be a link [^text](url)
+    if (id_end + 1 < content.len and content[id_end + 1] == '(') return null;
+
+    const id = content[id_start..id_end];
+
+    // Build href="#fn-{id}" and id="fnref-{id}"
+    const href = try std.fmt.allocPrint(allocator, "#fn-{s}", .{id});
+    const ref_id = try std.fmt.allocPrint(allocator, "fnref-{s}", .{id});
+
+    const href_attr = try allocator.alloc(ztree.Attr, 2);
+    href_attr[0] = .{ .key = "href", .value = href };
+    href_attr[1] = .{ .key = "id", .value = ref_id };
+
+    const a_children = try allocator.alloc(Node, 1);
+    a_children[0] = .{ .text = id };
+
+    const sup_children = try allocator.alloc(Node, 1);
+    sup_children[0] = .{ .element = .{ .tag = "a", .attrs = href_attr, .children = a_children } };
+
+    return .{
+        .node = .{ .element = .{ .tag = "sup", .attrs = &.{}, .children = sup_children } },
+        .end = id_end + 1,
+    };
 }
 
 const AutolinkResult = struct {
