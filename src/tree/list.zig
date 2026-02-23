@@ -18,9 +18,47 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
 
     var li_nodes: std.ArrayList(Node) = .empty;
     var i = start;
+    var is_loose = false;
+    var seen_item = false;
+
+    // First pass: detect if list is loose (blank between same-level items)
+    {
+        var j = start;
+        var seen_blank = false;
+        var items_seen: usize = 0;
+        while (j < blocks.len) {
+            const b = blocks[j];
+            if (b.tag == .blank) {
+                if (items_seen > 0) seen_blank = true;
+                j += 1;
+                continue;
+            }
+            if (b.tag != .ul_item and b.tag != .ol_item) break;
+            if (b.indent < base_indent) break;
+            if (b.indent == base_indent and b.tag != base_tag) break;
+            if (b.indent == base_indent) {
+                if (seen_blank and items_seen > 0) {
+                    is_loose = true;
+                    break;
+                }
+                items_seen += 1;
+                seen_blank = false;
+            }
+            // Also check if any item has multi-paragraph content
+            if (b.loose) is_loose = true;
+            j += 1;
+        }
+    }
 
     while (i < blocks.len) {
         const block = blocks[i];
+
+        // Skip blank markers
+        if (block.tag == .blank) {
+            i += 1;
+            continue;
+        }
+
         // Stop if not a list item
         if (block.tag != .ul_item and block.tag != .ol_item) break;
         // Stop if indent decreased below base
@@ -48,8 +86,7 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
         }
 
         // Same indent and type — new li
-        const inline_nodes = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
-
+        seen_item = true;
         const li_attrs: []const ztree.Attr = if (block.checked) |checked| blk: {
             if (checked) {
                 const attrs = try allocator.alloc(ztree.Attr, 1);
@@ -59,11 +96,23 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
             break :blk &.{};
         } else &.{};
 
-        try li_nodes.append(allocator, .{ .element = .{
-            .tag = "li",
-            .attrs = li_attrs,
-            .children = inline_nodes,
-        } });
+        if (is_loose or block.loose) {
+            // Loose list or multi-paragraph item: wrap in <p> tags
+            const children = try buildLooseItemChildren(allocator, block.content, ref_defs);
+            try li_nodes.append(allocator, .{ .element = .{
+                .tag = "li",
+                .attrs = li_attrs,
+                .children = children,
+            } });
+        } else {
+            // Tight list: inline content directly in li
+            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
+            try li_nodes.append(allocator, .{ .element = .{
+                .tag = "li",
+                .attrs = li_attrs,
+                .children = inline_nodes,
+            } });
+        }
 
         i += 1;
     }
@@ -76,4 +125,33 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
         } },
         .next = i,
     };
+}
+
+/// Build children for a loose list item, splitting on \n\n into separate <p> elements.
+fn buildLooseItemChildren(allocator: std.mem.Allocator, content: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error![]const Node {
+    var paras: std.ArrayList(Node) = .empty;
+    var rest = content;
+
+    while (rest.len > 0) {
+        if (std.mem.indexOf(u8, rest, "\n\n")) |sep| {
+            const para_content = rest[0..sep];
+            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, para_content, ref_defs);
+            try paras.append(allocator, .{ .element = .{
+                .tag = "p",
+                .attrs = &.{},
+                .children = inline_nodes,
+            } });
+            rest = rest[sep + 2 ..];
+        } else {
+            const inline_nodes = try inlines.parseInlinesWithRefs(allocator, rest, ref_defs);
+            try paras.append(allocator, .{ .element = .{
+                .tag = "p",
+                .attrs = &.{},
+                .children = inline_nodes,
+            } });
+            break;
+        }
+    }
+
+    return try paras.toOwnedSlice(allocator);
 }

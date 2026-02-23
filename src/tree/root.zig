@@ -41,7 +41,9 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
     while (i < blocks.len) {
         const block = blocks[i];
 
-        if (block.tag == .footnote_def) {
+        if (block.tag == .blank) {
+            i += 1; // skip blank markers
+        } else if (block.tag == .footnote_def) {
             try footnotes.append(allocator, block);
             i += 1;
         } else if (block.tag == .ref_def) {
@@ -60,6 +62,9 @@ pub fn buildTree(allocator: std.mem.Allocator, blocks: []const Block.Block, pars
                 .attrs = &.{},
                 .children = inner.fragment,
             } });
+            i += 1;
+        } else if (block.tag == .html_block) {
+            try nodes.append(allocator, .{ .raw = block.content });
             i += 1;
         } else if (block.tag == .hr) {
             try nodes.append(allocator, .{ .element = .{

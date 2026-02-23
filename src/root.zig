@@ -1012,6 +1012,156 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
 }
 
+// -- parse: extended autolinks --
+
+test "bare URL — https" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Visit https://example.com today.");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("Visit ", p.element.children[0].text);
+    const a = p.element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings("https://example.com", a.element.children[0].text);
+    try testing.expectEqualStrings(" today.", p.element.children[2].text);
+}
+
+test "bare URL — http" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "See http://example.com for more.");
+    const a = (try expectFragment(t, 1))[0].element.children[1];
+    try testing.expectEqualStrings("a", a.element.tag);
+    try testing.expectEqualStrings("http://example.com", a.element.attrs[0].value.?);
+}
+
+test "bare URL — trailing punctuation stripped" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "See https://example.com.");
+    const p = (try expectFragment(t, 1))[0];
+    const a = p.element.children[1];
+    try testing.expectEqualStrings("https://example.com", a.element.attrs[0].value.?);
+    try testing.expectEqualStrings(".", p.element.children[2].text);
+}
+
+test "bare URL — not just h" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "hello world");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "hello world");
+}
+
+// -- parse: inline HTML --
+
+test "inline HTML — simple tag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Hello <em>world</em>.");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(5, p.element.children.len);
+    try testing.expectEqualStrings("Hello ", p.element.children[0].text);
+    try testing.expectEqualStrings("<em>", p.element.children[1].raw);
+    try testing.expectEqualStrings("world", p.element.children[2].text);
+    try testing.expectEqualStrings("</em>", p.element.children[3].raw);
+    try testing.expectEqualStrings(".", p.element.children[4].text);
+}
+
+test "inline HTML — self-closing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Line<br/>break.");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("<br/>", p.element.children[1].raw);
+}
+
+test "inline HTML — with attributes" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "A <span class=\"x\">B</span> C");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqualStrings("<span class=\"x\">", p.element.children[1].raw);
+}
+
+test "inline HTML — comment" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Before <!-- comment --> after.");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("<!-- comment -->", p.element.children[1].raw);
+}
+
+// -- parse: block HTML --
+
+test "HTML block — div" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "<div class=\"note\">\nHello\n</div>");
+    const nodes = try expectFragment(t, 1);
+    try testing.expectEqualStrings("<div class=\"note\">\nHello\n</div>", nodes[0].raw);
+}
+
+test "HTML block — not rendered as paragraph" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "Text.\n\n<section>\nContent\n</section>\n\nMore text.");
+    const nodes = try expectFragment(t, 3);
+    try expectTextElement(nodes[0], "p", "Text.");
+    try testing.expectEqualStrings("<section>\nContent\n</section>", nodes[1].raw);
+    try expectTextElement(nodes[2], "p", "More text.");
+}
+
+// -- parse: loose lists --
+
+test "loose list — blank between items" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "- one\n\n- two\n\n- three");
+    const nodes = try expectFragment(t, 1);
+    const ul = nodes[0];
+    try testing.expectEqualStrings("ul", ul.element.tag);
+    try testing.expectEqual(3, ul.element.children.len);
+    // Loose list: each li wraps content in p
+    const li1 = ul.element.children[0];
+    try testing.expectEqualStrings("li", li1.element.tag);
+    try testing.expectEqual(1, li1.element.children.len);
+    try testing.expectEqualStrings("p", li1.element.children[0].element.tag);
+    try testing.expectEqualStrings("one", li1.element.children[0].element.children[0].text);
+}
+
+test "tight list — no blank between items" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "- one\n- two\n- three");
+    const nodes = try expectFragment(t, 1);
+    const ul = nodes[0];
+    const li1 = ul.element.children[0];
+    // Tight list: content directly in li, no p wrapping
+    try testing.expectEqualStrings("one", li1.element.children[0].text);
+}
+
+// -- parse: multi-paragraph list items --
+
+test "multi-paragraph list item" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "- First para.\n\n  Second para.");
+    const nodes = try expectFragment(t, 1);
+    const li = nodes[0].element.children[0];
+    try testing.expectEqualStrings("li", li.element.tag);
+    // Should have two p children
+    try testing.expectEqual(2, li.element.children.len);
+    try testing.expectEqualStrings("p", li.element.children[0].element.tag);
+    try testing.expectEqualStrings("First para.", li.element.children[0].element.children[0].text);
+    try testing.expectEqualStrings("p", li.element.children[1].element.tag);
+    try testing.expectEqualStrings("Second para.", li.element.children[1].element.children[0].text);
+}
+
 // -- parse: entity references --
 
 test "entity — named &amp;" {
