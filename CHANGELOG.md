@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.9.0] — 2026-02-23
+
+### Features
+
+- GFM tables with `thead`/`tbody`/`tr`/`th`/`td` structure
+- Column alignment via `:---`, `:---:`, `---:` separator syntax → `style` attribute
+
 ## [0.8.0] — 2026-02-22
 
 ### Features
