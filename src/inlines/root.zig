@@ -129,6 +129,14 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
                 try nodes.append(allocator, .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } });
                 pos = result.end;
                 text_start = pos;
+            } else if (findInlineHtml(content, pos)) |html_end| {
+                // Inline HTML tag — preserve as raw
+                if (text_start < pos) {
+                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
+                }
+                try nodes.append(allocator, .{ .raw = content[pos..html_end] });
+                pos = html_end;
+                text_start = pos;
             } else {
                 pos += 1; // < is literal
             }
@@ -191,6 +199,24 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
                 text_start = pos;
             } else {
                 pos += 1; // soft break — \n stays as text
+            }
+        } else if (content[pos] == 'h' and (pos == 0 or content[pos - 1] != '<')) {
+            // GFM extended autolink: bare https:// or http:// URLs
+            // Skip if preceded by < (that's angle-bracket autolink syntax)
+            if (findBareUrl(content, pos)) |url_end| {
+                if (text_start < pos) {
+                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
+                }
+                const url = content[pos..url_end];
+                const attrs = try allocator.alloc(ztree.Attr, 1);
+                attrs[0] = .{ .key = "href", .value = url };
+                const children = try allocator.alloc(Node, 1);
+                children[0] = .{ .text = url };
+                try nodes.append(allocator, .{ .element = .{ .tag = "a", .attrs = attrs, .children = children } });
+                pos = url_end;
+                text_start = pos;
+            } else {
+                pos += 1;
             }
         } else {
             pos += 1;
@@ -324,6 +350,118 @@ fn codePointToEntity(cp: u21, end: usize) ?EntityResult {
             return null;
         },
     };
+}
+
+/// Detect an inline HTML tag at the given position.
+/// Matches opening tags `<tag ...>`, closing tags `</tag>`, self-closing `<tag/>`,
+/// and HTML comments `<!-- ... -->`.
+fn findInlineHtml(content: []const u8, pos: usize) ?usize {
+    if (pos >= content.len or content[pos] != '<') return null;
+
+    const start = pos + 1;
+    if (start >= content.len) return null;
+
+    // HTML comment <!-- ... -->
+    if (content.len > pos + 3 and content[pos + 1] == '!' and content[pos + 2] == '-' and content[pos + 3] == '-') {
+        if (std.mem.indexOf(u8, content[pos + 4 ..], "-->")) |close| {
+            return pos + 4 + close + 3;
+        }
+        return null;
+    }
+
+    // Closing tag </tag>
+    const is_closing = (content[start] == '/');
+    const tag_start = if (is_closing) start + 1 else start;
+
+    // Tag name must start with a letter
+    if (tag_start >= content.len or !std.ascii.isAlphabetic(content[tag_start])) return null;
+
+    // Find end of tag name
+    var name_end = tag_start;
+    while (name_end < content.len and (std.ascii.isAlphanumeric(content[name_end]) or content[name_end] == '-')) {
+        name_end += 1;
+    }
+    if (name_end == tag_start) return null;
+
+    const tag_name = content[tag_start..name_end];
+
+    // Only match known HTML tags (not arbitrary words in angle brackets)
+    if (!isKnownHtmlTag(tag_name)) return null;
+
+    // Find closing >
+    var end = name_end;
+    while (end < content.len and content[end] != '>') {
+        if (content[end] == '\n') return null; // no multi-line tags inline
+        end += 1;
+    }
+    if (end >= content.len) return null;
+
+    return end + 1; // past >
+}
+
+fn isKnownHtmlTag(name: []const u8) bool {
+    const tags = [_][]const u8{
+        "a", "abbr", "b", "bdi", "bdo", "br", "cite", "code", "data", "del",
+        "dfn", "em", "i", "img", "input", "ins", "kbd", "mark", "q", "rp",
+        "rt", "ruby", "s", "samp", "small", "span", "strong", "sub", "sup",
+        "time", "u", "var", "wbr",
+        // Also block-level for completeness
+        "div", "p", "section", "article", "aside", "header", "footer", "nav",
+        "main", "figure", "figcaption", "details", "summary", "blockquote",
+        "ul", "ol", "li", "dl", "dt", "dd", "table", "thead", "tbody", "tfoot",
+        "tr", "th", "td", "caption", "colgroup", "col", "form", "fieldset",
+        "legend", "select", "option", "optgroup", "textarea", "button", "label",
+        "output", "progress", "meter", "iframe", "video", "audio", "source",
+        "canvas", "svg", "math", "script", "style", "link", "meta", "title",
+        "head", "body", "html", "h1", "h2", "h3", "h4", "h5", "h6", "hr", "pre",
+    };
+    for (tags) |tag| {
+        if (eqlIgnoreCase(name, tag)) return true;
+    }
+    return false;
+}
+
+fn eqlIgnoreCase(a: []const u8, b: []const u8) bool {
+    if (a.len != b.len) return false;
+    for (a, b) |ac, bc| {
+        if (std.ascii.toLower(ac) != std.ascii.toLower(bc)) return false;
+    }
+    return true;
+}
+
+/// Detect a bare URL (GFM extended autolink) starting at pos.
+/// Matches http:// or https:// followed by non-space characters.
+/// Returns the end position of the URL, or null.
+fn findBareUrl(content: []const u8, pos: usize) ?usize {
+    const rest = content[pos..];
+    const scheme_len: usize = if (std.mem.startsWith(u8, rest, "https://"))
+        8
+    else if (std.mem.startsWith(u8, rest, "http://"))
+        7
+    else
+        return null;
+
+    // Must have at least one char after scheme
+    if (rest.len <= scheme_len) return null;
+
+    // Find end of URL — stop at space, <, >, newline, or end
+    var end = scheme_len;
+    while (end < rest.len) {
+        const c = rest[end];
+        if (c == ' ' or c == '\t' or c == '\n' or c == '<' or c == '>') break;
+        end += 1;
+    }
+
+    // Strip trailing punctuation that's likely not part of the URL
+    while (end > scheme_len and (rest[end - 1] == '.' or rest[end - 1] == ',' or
+        rest[end - 1] == ')' or rest[end - 1] == ';' or rest[end - 1] == ':' or
+        rest[end - 1] == '!' or rest[end - 1] == '?'))
+    {
+        end -= 1;
+    }
+
+    if (end <= scheme_len) return null;
+    return pos + end;
 }
 
 const AutolinkResult = struct {
