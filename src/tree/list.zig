@@ -11,7 +11,7 @@ pub const ListResult = struct {
 };
 
 /// Group consecutive list item blocks into a ul/ol element, handling nesting via indentation.
-pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, start: usize) std.mem.Allocator.Error!ListResult {
+pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, start: usize, ref_defs: []const Block.RefDef) std.mem.Allocator.Error!ListResult {
     const base_indent = blocks[start].indent;
     const base_tag = blocks[start].tag;
     const list_tag: []const u8 = if (base_tag == .ul_item) "ul" else "ol";
@@ -30,7 +30,7 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
 
         if (block.indent > base_indent) {
             // Nested list — build sub-list and attach to previous li
-            const sub = try buildList(allocator, blocks, i);
+            const sub = try buildList(allocator, blocks, i, ref_defs);
             if (li_nodes.items.len > 0) {
                 const prev = &li_nodes.items[li_nodes.items.len - 1];
                 const old = prev.element.children;
@@ -48,7 +48,7 @@ pub fn buildList(allocator: std.mem.Allocator, blocks: []const Block.Block, star
         }
 
         // Same indent and type — new li
-        const inline_nodes = try inlines.parseInlines(allocator, block.content);
+        const inline_nodes = try inlines.parseInlinesWithRefs(allocator, block.content, ref_defs);
 
         const li_attrs: []const ztree.Attr = if (block.checked) |checked| blk: {
             if (checked) {

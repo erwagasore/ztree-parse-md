@@ -3,6 +3,7 @@ const std = @import("std");
 const ztree = @import("ztree");
 const Node = ztree.Node;
 const inlines = @import("root.zig");
+const Block = @import("../block/root.zig");
 
 pub const EmphasisResult = struct {
     node: Node,
@@ -10,7 +11,7 @@ pub const EmphasisResult = struct {
 };
 
 /// Try to build an emphasis node from a delimiter run (* or _). Returns null if no matching close found.
-pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_start: usize, delim_count: usize, delimiter: u8) std.mem.Allocator.Error!?EmphasisResult {
+pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_start: usize, delim_count: usize, delimiter: u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error!?EmphasisResult {
     const after_delims = delim_start + delim_count;
 
     // Don't open emphasis if followed by space or at end of content
@@ -19,7 +20,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count == 3) {
         // ***text*** → em(strong(text))
         if (findExactRun(content, after_delims, delimiter, 3)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
+            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
             const strong_children = try allocator.alloc(Node, 1);
             strong_children[0] = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } };
             return .{
@@ -32,7 +33,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count >= 2) {
         // **text** → strong(text)
         if (findExactRun(content, after_delims, delimiter, 2)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
+            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
             return .{
                 .node = .{ .element = .{ .tag = "strong", .attrs = &.{}, .children = inner } },
                 .end = close + 2,
@@ -43,7 +44,7 @@ pub fn handleEmphasis(allocator: std.mem.Allocator, content: []const u8, delim_s
     if (delim_count >= 1) {
         // *text* → em(text)
         if (findExactRun(content, after_delims, delimiter, 1)) |close| {
-            const inner = try inlines.parseInlines(allocator, content[after_delims..close]);
+            const inner = try inlines.parseInlinesWithRefs(allocator, content[after_delims..close], ref_defs);
             return .{
                 .node = .{ .element = .{ .tag = "em", .attrs = &.{}, .children = inner } },
                 .end = close + 1,

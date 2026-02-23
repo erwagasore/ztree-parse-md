@@ -9,6 +9,7 @@ const line = @import("line.zig");
 const blockquote = @import("blockquote.zig");
 const tbl = @import("table.zig");
 const footnote = @import("footnote.zig");
+const refdef = @import("refdef.zig");
 const utils = @import("utils.zig");
 
 // Re-exports for external use
@@ -22,9 +23,12 @@ pub const stripBlockquotePrefix = blockquote.stripBlockquotePrefix;
 pub const isTableSeparator = tbl.isTableSeparator;
 pub const isTableRow = tbl.isTableRow;
 pub const classifyFootnoteDef = footnote.classifyFootnoteDef;
+pub const classifyRefDef = refdef.classifyRefDef;
+pub const RefDef = refdef.RefDef;
+pub const findRefDef = refdef.findRefDef;
 pub const joinLines = utils.joinLines;
 
-pub const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table, footnote_def };
+pub const Tag = enum { h1, h2, h3, h4, h5, h6, p, pre, hr, blockquote, ul_item, ol_item, table, footnote_def, ref_def };
 
 pub const Block = struct {
     tag: Tag,
@@ -143,6 +147,16 @@ pub fn parseBlocks(allocator: std.mem.Allocator, input: []const u8) ![]const Blo
             continue;
         }
 
+        if (classifyRefDef(raw_line) != null) {
+            if (para_start) |start| {
+                try blocks.append(allocator, .{ .tag = .ref_def, .content = input[start..para_end] });
+                para_start = null;
+            }
+            // Store raw line so tree builder can re-parse label/url/title
+            try blocks.append(allocator, .{ .tag = .ref_def, .content = raw_line });
+            continue;
+        }
+
         if (classifyHeading(raw_line)) |h| {
             if (para_start) |start| {
                 try blocks.append(allocator, .{ .tag = .p, .content = input[start..para_end] });
@@ -228,6 +242,7 @@ pub fn tagName(tag: Tag) []const u8 {
         .ul_item, .ol_item => "li",
         .table => "table",
         .footnote_def => "li",
+        .ref_def => "",
     };
 }
 
@@ -240,4 +255,5 @@ comptime {
     _ = blockquote;
     _ = tbl;
     _ = footnote;
+    _ = refdef;
 }

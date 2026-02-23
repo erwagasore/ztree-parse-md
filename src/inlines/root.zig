@@ -17,8 +17,15 @@ pub const parseUrlTitle = link.parseUrlTitle;
 pub const findClosingBackticks = code.findClosingBackticks;
 pub const trimCodeSpan = code.trimCodeSpan;
 
+const Block = @import("../block/root.zig");
+
 /// Parse inline Markdown within a leaf block's content.
 pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error![]const Node {
+    return parseInlinesWithRefs(allocator, content, &.{});
+}
+
+/// Parse inline Markdown with reference link definitions available for resolution.
+pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error![]const Node {
     var nodes: std.ArrayList(Node) = .empty;
     var text_start: usize = 0;
     var pos: usize = 0;
@@ -67,7 +74,7 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
             while (pos < content.len and content[pos] == delim) pos += 1;
             const delim_count = pos - delim_start;
 
-            if (try handleEmphasis(allocator, content, delim_start, delim_count, delim)) |result| {
+            if (try handleEmphasis(allocator, content, delim_start, delim_count, delim, ref_defs)) |result| {
                 // Flush pending text
                 if (text_start < delim_start) {
                     try nodes.append(allocator, .{ .text = content[text_start..delim_start] });
@@ -79,7 +86,7 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
             // No match — delimiters are literal text, pos already advanced past them.
         } else if (content[pos] == '!' and pos + 1 < content.len and content[pos + 1] == '[') {
             const marker_start = pos;
-            if (try handleLinkOrImage(allocator, content, pos, true)) |result| {
+            if (try handleLinkOrImage(allocator, content, pos, true, ref_defs)) |result| {
                 if (text_start < marker_start) {
                     try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
                 }
@@ -99,7 +106,7 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
                 try nodes.append(allocator, result.node);
                 pos = result.end;
                 text_start = pos;
-            } else if (try handleLinkOrImage(allocator, content, pos, false)) |result| {
+            } else if (try handleLinkOrImage(allocator, content, pos, false, ref_defs)) |result| {
                 if (text_start < marker_start) {
                     try nodes.append(allocator, .{ .text = content[text_start..marker_start] });
                 }
@@ -135,7 +142,7 @@ pub fn parseInlines(allocator: std.mem.Allocator, content: []const u8) std.mem.A
                     if (text_start < tilde_start) {
                         try nodes.append(allocator, .{ .text = content[text_start..tilde_start] });
                     }
-                    const inner = try parseInlines(allocator, content[pos..close]);
+                    const inner = try parseInlinesWithRefs(allocator, content[pos..close], ref_defs);
                     try nodes.append(allocator, .{ .element = .{ .tag = "del", .attrs = &.{}, .children = inner } });
                     pos = close + 2;
                     text_start = pos;

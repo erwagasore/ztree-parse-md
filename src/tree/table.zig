@@ -3,11 +3,12 @@ const std = @import("std");
 const ztree = @import("ztree");
 const Node = ztree.Node;
 const inlines = @import("../inlines/root.zig");
+const Block = @import("../block/root.zig");
 
 pub const Align = enum { none, left, center, right };
 
 /// Build a table element from the raw table content (header + separator + body rows).
-pub fn buildTableNode(allocator: std.mem.Allocator, content: []const u8) std.mem.Allocator.Error!Node {
+pub fn buildTableNode(allocator: std.mem.Allocator, content: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error!Node {
     var lines: std.ArrayList([]const u8) = .empty;
     var lpos: usize = 0;
     while (lpos < content.len) {
@@ -26,7 +27,7 @@ pub fn buildTableNode(allocator: std.mem.Allocator, content: []const u8) std.mem
     const aligns = try parseAlignments(allocator, sep_line);
 
     // Build thead
-    const header_cells = try parseTableRow(allocator, header_line, aligns, "th");
+    const header_cells = try parseTableRow(allocator, header_line, aligns, "th", ref_defs);
     const header_tr = try allocator.alloc(Node, 1);
     header_tr[0] = .{ .element = .{ .tag = "tr", .attrs = &.{}, .children = header_cells } };
     const thead = try allocator.alloc(Node, 1);
@@ -36,7 +37,7 @@ pub fn buildTableNode(allocator: std.mem.Allocator, content: []const u8) std.mem
     if (lines.items.len > 2) {
         var body_rows: std.ArrayList(Node) = .empty;
         for (lines.items[2..]) |row_line| {
-            const row_cells = try parseTableRow(allocator, row_line, aligns, "td");
+            const row_cells = try parseTableRow(allocator, row_line, aligns, "td", ref_defs);
             try body_rows.append(allocator, .{ .element = .{ .tag = "tr", .attrs = &.{}, .children = row_cells } });
         }
 
@@ -50,7 +51,7 @@ pub fn buildTableNode(allocator: std.mem.Allocator, content: []const u8) std.mem
 }
 
 /// Parse a table row into cells (th or td elements) with alignment attributes.
-fn parseTableRow(allocator: std.mem.Allocator, raw_line: []const u8, aligns: []const Align, cell_tag: []const u8) std.mem.Allocator.Error![]const Node {
+fn parseTableRow(allocator: std.mem.Allocator, raw_line: []const u8, aligns: []const Align, cell_tag: []const u8, ref_defs: []const Block.RefDef) std.mem.Allocator.Error![]const Node {
     var nodes: std.ArrayList(Node) = .empty;
     const trimmed = std.mem.trim(u8, raw_line, " \t");
 
@@ -68,7 +69,7 @@ fn parseTableRow(allocator: std.mem.Allocator, raw_line: []const u8, aligns: []c
         // Skip trailing empty segment
         if (pos >= trimmed.len and cell_content.len == 0) break;
 
-        const children = try inlines.parseInlines(allocator, cell_content);
+        const children = try inlines.parseInlinesWithRefs(allocator, cell_content, ref_defs);
 
         const col_align = if (col < aligns.len) aligns[col] else Align.none;
         const attrs: []const ztree.Attr = if (col_align != .none) blk: {
