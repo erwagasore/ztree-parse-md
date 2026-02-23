@@ -149,6 +149,21 @@ pub fn parseInlinesWithRefs(allocator: std.mem.Allocator, content: []const u8, r
                 }
             }
             // else: literal tildes, pos already advanced past them
+        } else if (content[pos] == '&') {
+            // HTML entity reference
+            if (resolveEntity(content, pos)) |entity| {
+                if (text_start < pos) {
+                    try nodes.append(allocator, .{ .text = content[text_start..pos] });
+                }
+                // Allocate decoded string on the arena so it outlives this function
+                const decoded = try allocator.alloc(u8, entity.decoded.len);
+                @memcpy(decoded, entity.decoded);
+                try nodes.append(allocator, .{ .text = decoded });
+                pos = entity.end;
+                text_start = pos;
+            } else {
+                pos += 1; // & is literal
+            }
         } else if (content[pos] == '\n') {
             // Check for hard line break
             var break_start = pos;
@@ -223,6 +238,91 @@ fn handleFootnoteRef(allocator: std.mem.Allocator, content: []const u8, pos: usi
     return .{
         .node = .{ .element = .{ .tag = "sup", .attrs = &.{}, .children = sup_children } },
         .end = id_end + 1,
+    };
+}
+
+const EntityResult = struct {
+    decoded: []const u8,
+    end: usize,
+};
+
+/// Resolve an HTML entity reference at the given position.
+/// Supports named entities (&amp; &lt; &gt; &quot; &apos; &nbsp;)
+/// and numeric entities (&#123; &#x1F;).
+fn resolveEntity(content: []const u8, pos: usize) ?EntityResult {
+    if (pos >= content.len or content[pos] != '&') return null;
+
+    // Find closing ;
+    const max_len = @min(pos + 12, content.len); // entities are short
+    var end = pos + 1;
+    while (end < max_len) : (end += 1) {
+        if (content[end] == ';') break;
+    } else {
+        return null;
+    }
+    if (content[end] != ';') return null;
+
+    const ref = content[pos + 1 .. end];
+    if (ref.len == 0) return null;
+
+    // Numeric: &#123; or &#x1F;
+    if (ref[0] == '#') {
+        if (ref.len < 2) return null;
+        if (ref[1] == 'x' or ref[1] == 'X') {
+            // Hex: &#xHH;
+            const hex = ref[2..];
+            if (hex.len == 0) return null;
+            const cp = std.fmt.parseInt(u21, hex, 16) catch return null;
+            return codePointToEntity(cp, end + 1);
+        } else {
+            // Decimal: &#DDD;
+            const dec = ref[1..];
+            const cp = std.fmt.parseInt(u21, dec, 10) catch return null;
+            return codePointToEntity(cp, end + 1);
+        }
+    }
+
+    // Named entities
+    const decoded: []const u8 = if (std.mem.eql(u8, ref, "amp")) "&"
+        else if (std.mem.eql(u8, ref, "lt")) "<"
+        else if (std.mem.eql(u8, ref, "gt")) ">"
+        else if (std.mem.eql(u8, ref, "quot")) "\""
+        else if (std.mem.eql(u8, ref, "apos")) "'"
+        else if (std.mem.eql(u8, ref, "nbsp")) "\u{00A0}"
+        else if (std.mem.eql(u8, ref, "copy")) "\u{00A9}"
+        else if (std.mem.eql(u8, ref, "mdash")) "\u{2014}"
+        else if (std.mem.eql(u8, ref, "ndash")) "\u{2013}"
+        else if (std.mem.eql(u8, ref, "hellip")) "\u{2026}"
+        else if (std.mem.eql(u8, ref, "laquo")) "\u{00AB}"
+        else if (std.mem.eql(u8, ref, "raquo")) "\u{00BB}"
+        else return null;
+
+    return .{ .decoded = decoded, .end = end + 1 };
+}
+
+fn codePointToEntity(cp: u21, end: usize) ?EntityResult {
+    // Common ASCII codepoints used in entities
+    return switch (cp) {
+        '&' => .{ .decoded = "&", .end = end },
+        '<' => .{ .decoded = "<", .end = end },
+        '>' => .{ .decoded = ">", .end = end },
+        '"' => .{ .decoded = "\"", .end = end },
+        '\'' => .{ .decoded = "'", .end = end },
+        ' ' => .{ .decoded = " ", .end = end },
+        0x00A0 => .{ .decoded = "\u{00A0}", .end = end },
+        0x00A9 => .{ .decoded = "\u{00A9}", .end = end },
+        0x2014 => .{ .decoded = "\u{2014}", .end = end },
+        0x2013 => .{ .decoded = "\u{2013}", .end = end },
+        0x2026 => .{ .decoded = "\u{2026}", .end = end },
+        else => {
+            // For other ASCII, produce single byte
+            if (cp >= 0x20 and cp < 0x7F) {
+                const chars = " !\"#$%&'()*+,-./0123456789:;<=>?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\\]^_`abcdefghijklmnopqrstuvwxyz{|}~";
+                const idx = cp - 0x20;
+                return .{ .decoded = chars[idx .. idx + 1], .end = end };
+            }
+            return null;
+        },
     };
 }
 

@@ -1012,6 +1012,141 @@ test "multiple links in one line" {
     try testing.expectEqualStrings("a", p.element.children[2].element.tag);
 }
 
+// -- parse: entity references --
+
+test "entity — named &amp;" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "A &amp; B");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("A ", p.element.children[0].text);
+    try testing.expectEqualStrings("&", p.element.children[1].text);
+    try testing.expectEqualStrings(" B", p.element.children[2].text);
+}
+
+test "entity — named &lt; &gt;" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "&lt;div&gt;");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("<", p.element.children[0].text);
+    try testing.expectEqualStrings("div", p.element.children[1].text);
+    try testing.expectEqualStrings(">", p.element.children[2].text);
+}
+
+test "entity — numeric decimal &#38;" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "&#38;");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqualStrings("&", p.element.children[0].text);
+}
+
+test "entity — numeric hex &#x26;" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "&#x26;");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqualStrings("&", p.element.children[0].text);
+}
+
+test "entity — &quot;" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "&quot;hello&quot;");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("\"", p.element.children[0].text);
+    try testing.expectEqualStrings("hello", p.element.children[1].text);
+    try testing.expectEqualStrings("\"", p.element.children[2].text);
+}
+
+test "entity — unknown is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "&unknown;");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "&unknown;");
+}
+
+test "entity — no semicolon is literal" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "a &amp b");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "a &amp b");
+}
+
+// -- parse: intra-word underscore --
+
+test "underscore — intra-word not emphasis" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "foo_bar_baz");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "foo_bar_baz");
+}
+
+test "underscore — double intra-word not emphasis" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "foo__bar__baz");
+    const nodes = try expectFragment(t, 1);
+    try expectTextElement(nodes[0], "p", "foo__bar__baz");
+}
+
+test "underscore — at word boundary still works" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "_italic_ text");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(2, p.element.children.len);
+    try testing.expectEqualStrings("em", p.element.children[0].element.tag);
+}
+
+test "star — intra-word still works" {
+    // Stars work intra-word per CommonMark
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "foo*bar*baz");
+    const p = (try expectFragment(t, 1))[0];
+    try testing.expectEqual(3, p.element.children.len);
+    try testing.expectEqualStrings("foo", p.element.children[0].text);
+    try testing.expectEqualStrings("em", p.element.children[1].element.tag);
+    try testing.expectEqualStrings("baz", p.element.children[2].text);
+}
+
+// -- parse: nested mixed emphasis --
+
+test "nested emphasis — em wrapping strong" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "*foo **bar** baz*");
+    const p = (try expectFragment(t, 1))[0];
+    const em = p.element.children[0];
+    try testing.expectEqualStrings("em", em.element.tag);
+    try testing.expectEqual(3, em.element.children.len);
+    try testing.expectEqualStrings("foo ", em.element.children[0].text);
+    try testing.expectEqualStrings("strong", em.element.children[1].element.tag);
+    try testing.expectEqualStrings("bar", em.element.children[1].element.children[0].text);
+    try testing.expectEqualStrings(" baz", em.element.children[2].text);
+}
+
+test "nested emphasis — strong wrapping em" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const t = try parse(arena.allocator(), "**foo *bar* baz**");
+    const p = (try expectFragment(t, 1))[0];
+    const strong = p.element.children[0];
+    try testing.expectEqualStrings("strong", strong.element.tag);
+    try testing.expectEqual(3, strong.element.children.len);
+    try testing.expectEqualStrings("foo ", strong.element.children[0].text);
+    try testing.expectEqualStrings("em", strong.element.children[1].element.tag);
+    try testing.expectEqualStrings(" baz", strong.element.children[2].text);
+}
+
 // -- parse: setext headings --
 
 test "setext h1 — equals underline" {
