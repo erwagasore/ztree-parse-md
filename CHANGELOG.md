@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.14.0] — 2026-02-23
+
+### Features
+
+- Extended autolinks (GFM): bare `https://` and `http://` URLs auto-linked without angle brackets, with trailing punctuation stripping
+- Inline HTML pass-through: known HTML tags (`<em>`, `<br/>`, `<span>`, `<!-- comments -->`) preserved as raw nodes
+- Block HTML pass-through: block-level tags (`<div>`, `<section>`, `<script>`, etc.) preserved as raw content blocks
+- Tight vs loose lists: lists with blank lines between items wrap content in `<p>` tags
+- Multi-paragraph list items: blank line + indented continuation creates additional `<p>` elements within the same `<li>`
+
 ## [0.13.0] — 2026-02-23
 
 ### Features
