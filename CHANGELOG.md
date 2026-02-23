@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0] — 2026-02-23
+
+### Features
+
+- Setext headings: `===` underline → h1, `---` underline → h2 (CommonMark-correct precedence over thematic breaks)
+- Indented code blocks: 4-space indent → `pre > code` with blank line merging and trailing blank stripping
+
 ## [0.11.0] — 2026-02-23
 
 ### Features
