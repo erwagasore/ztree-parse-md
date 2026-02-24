@@ -13,5 +13,9 @@
             .url = "git+https://github.com/erwagasore/ztree.git#main",
             .hash = "ztree-0.1.0-y2WFIvc3AABCEQ_g8mYa0ln1WS8Jr1j3ImcUr8od-jUd",
         },
+        .bun_md = .{
+            .url = "git+https://github.com/erwagasore/bun-md.git#main",
+            .hash = "bun_md-0.1.0-3RF4BXKaBQAX0THVEFcjoPo2GogAtwjSXRjx0_H51mKQ",
+        },
     },
 }
