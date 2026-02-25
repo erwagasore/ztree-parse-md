@@ -7,9 +7,9 @@ GFM Markdown parser for ztree. Parses Markdown text into a ztree `Node` tree.
 ```bash
 git clone git@github.com:erwagasore/ztree-parse-md.git
 cd ztree-parse-md
+zig build        # build library
+zig build test   # run tests
 ```
-
-TODO: add build and test commands once `build.zig` is added.
 
 ## Structure
 

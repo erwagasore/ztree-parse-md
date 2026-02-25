@@ -28,8 +28,12 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 
 ## Repo map
 
-- `src/` — Zig source code (planned: `root.zig` with public API and implementation)
-- `DESIGN.md` — architecture spec: two-pass parser design, memory model, build plan
+- `src/root.zig` — public API: re-exports `parse()` from the adapter
+- `src/adapter.zig` — SAX-to-tree adapter: converts bun-md events into ztree `Node` tree (+ tests)
+- `src/shim/bun.zig` — stdlib shim for bun-md's `@import("bun")` APIs
+- `build.zig` — build config: wires bun-md dependency with shim injection
+- `build.zig.zon` — dependencies: ztree, bun-md
+- `DESIGN.md` — architecture: adapter pattern, memory model, tag mapping
 
 ## Merge strategy
 
@@ -46,5 +50,6 @@ Use [Conventional Commits](https://www.conventionalcommits.org/).
 ## Orientation
 
 - **Entry point**: `src/root.zig` — public `parse()` function
-- **Domain**: GFM Markdown parser that produces a ztree `Node` tree (zero-copy, arena-allocated)
-- **Language**: Zig
+- **Domain**: GFM Markdown parser that produces a ztree `Node` tree (arena-allocated)
+- **Backend**: [bun-md](https://github.com/erwagasore/bun-md) — Zig port of md4c, CommonMark 0.31.2 + GFM
+- **Language**: Zig (0.16-dev)
