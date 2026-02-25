@@ -1,5 +1,16 @@
 # Changelog
 
+## [1.0.0] — 2026-02-24
+
+### Breaking Changes
+
+- Replaced hand-written parser with bun-md backend (Zig port of md4c from Bun). Gains full CommonMark 0.31.2 + GFM compliance (tables, strikethrough, task lists, autolinks). Public API unchanged but output tree structure may differ in edge cases.
+- Removed 20 hand-written parser files (`src/block/`, `src/inlines/`, `src/tree/`, `src/utils.zig`), replaced by SAX-to-tree adapter (`src/adapter.zig`) and stdlib shim (`src/shim/bun.zig`).
+
+### Other
+
+- Extracted shared utilities and deduplicated patterns across parser modules.
+
 ## [0.14.0] — 2026-02-23
 
 ### Features
