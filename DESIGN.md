@@ -121,4 +121,7 @@ src/
 
 ## Sync from upstream
 
-See [bun-md README](https://github.com/erwagasore/bun-md#sync-from-upstream).
+1. Update bun-md — see [bun-md README](https://github.com/erwagasore/bun-md#sync-from-upstream)
+2. Check for new APIs: `./scripts/check-shim.sh`
+3. Update hash in `build.zig.zon`
+4. `zig build test`
