@@ -118,9 +118,3 @@ src/
 | hard break | `br` | — |
 | plain text | `text()` | — |
 | raw HTML | `raw()` | — |
-
-## Sync from upstream
-
-1. Update bun-md — see [bun-md README](https://github.com/erwagasore/bun-md#sync-from-upstream)
-2. Update hash in `build.zig.zon`
-3. `zig build test`
