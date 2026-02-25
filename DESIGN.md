@@ -121,14 +121,4 @@ src/
 
 ## Sync from upstream
 
-bun-md tracks `oven-sh/bun/src/md/`. To update:
-
-```bash
-cd ../bun-md
-BUN_COMMIT="<hash>"
-curl -sL "https://github.com/oven-sh/bun/archive/${BUN_COMMIT}.tar.gz" | \
-  tar xz --strip-components=3 -C src/ "bun-${BUN_COMMIT}/src/md/"
-git add -A && git commit -m "sync: bun@${BUN_COMMIT:0:12}"
-```
-
-Then update the hash in `build.zig.zon`. The shim rarely needs changes.
+See [bun-md README](https://github.com/erwagasore/bun-md#sync-from-upstream).
