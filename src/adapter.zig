@@ -134,7 +134,7 @@ const TreeBuilder = struct {
             .tbody => self.push("tbody", &.{}),
             .tr => self.push("tr", &.{}),
             .h => self.push(headingTag(data), &.{}),
-            .hr => self.emit(ztree.closedElement("hr", &.{})),
+            .hr => self.emit(ztree.closedElement(self.alloc, "hr", &.{}) catch return),
             .ol => {
                 if (data == 1) {
                     self.push("ol", &.{});
@@ -148,9 +148,9 @@ const TreeBuilder = struct {
                 const mark = md.types.taskMarkFromData(data);
                 if (mark != 0) {
                     if (md.types.isTaskChecked(mark)) {
-                        self.emit(ztree.closedElement("input", self.attr2("type", "checkbox", "checked", null)));
+                        self.emit(ztree.closedElement(self.alloc, "input", self.attr2("type", "checkbox", "checked", null)) catch return);
                     } else {
-                        self.emit(ztree.closedElement("input", self.attr1("type", "checkbox")));
+                        self.emit(ztree.closedElement(self.alloc, "input", self.attr1("type", "checkbox")) catch return);
                     }
                 }
             },
@@ -219,7 +219,7 @@ const TreeBuilder = struct {
             const f = self.stack.pop() orelse return;
             const alt = collectText(self.alloc, f.children.items);
             const src_val = if (f.attrs.len > 0) f.attrs[0].value orelse "" else "";
-            self.emit(ztree.closedElement("img", self.attr2("src", src_val, "alt", alt)));
+            self.emit(ztree.closedElement(self.alloc, "img", self.attr2("src", src_val, "alt", alt)) catch return);
         } else self.pop();
     }
 
@@ -231,7 +231,7 @@ const TreeBuilder = struct {
             .normal, .code, .entity, .latexmath => self.copyNode(content, .text),
             .html => self.copyNode(content, .raw),
             .null_char => self.copyNode("\u{FFFD}", .text),
-            .br => self.emit(ztree.closedElement("br", &.{})),
+            .br => self.emit(ztree.closedElement(self.alloc, "br", &.{}) catch return),
             .softbr => self.copyNode("\n", .text),
         }
     }
