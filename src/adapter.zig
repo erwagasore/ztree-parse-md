@@ -76,7 +76,7 @@ const TreeBuilder = struct {
     }
 
     fn pop(self: *TreeBuilder) void {
-        const f = self.stack.pop() orelse return;
+        var f = self.stack.pop() orelse return;
         const children = f.children.toOwnedSlice() catch &.{};
         self.emit(.{ .element = .{ .tag = f.tag, .attrs = f.attrs, .children = children } });
     }
