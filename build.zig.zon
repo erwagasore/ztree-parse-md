@@ -15,7 +15,7 @@
         },
         .bun_md = .{
             .url = "git+https://github.com/erwagasore/bun-md.git#main",
-            .hash = "bun_md-0.1.0-3RF4BXKaBQAX0THVEFcjoPo2GogAtwjSXRjx0_H51mKQ",
+            .hash = "bun_md-0.1.0-3RF4BS2dBQDtnfRyL631yUjEzKHA4XwInSAu6XtZHR2x",
         },
     },
 }

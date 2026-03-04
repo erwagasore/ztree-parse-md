@@ -76,7 +76,7 @@ const TreeBuilder = struct {
     }
 
     fn pop(self: *TreeBuilder) void {
-        var f = self.stack.pop() orelse return;
+        const f = self.stack.pop() orelse return;
         const children = f.children.toOwnedSlice() catch &.{};
         self.emit(.{ .element = .{ .tag = f.tag, .attrs = f.attrs, .children = children } });
     }
@@ -216,7 +216,7 @@ const TreeBuilder = struct {
     fn onLeaveSpan(ptr: *anyopaque, span_type: SpanType) error{}!void {
         const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
         if (span_type == .img) {
-            var f = self.stack.pop() orelse return;
+            const f = self.stack.pop() orelse return;
             const alt = collectText(self.alloc, f.children.items);
             const src_val = if (f.attrs.len > 0) f.attrs[0].value orelse "" else "";
             self.emit(ztree.closedElement("img", self.attr2("src", src_val, "alt", alt)));
