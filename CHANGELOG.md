@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.0.1] — 2026-03-05
+
+### Fixes
+
+- Pin ztree to latest commit with attr() export fix.
+- Fix mutable binding for toOwnedSlice() in adapter pop().
+- Update bun-md dependency hash.
+
+### Other
+
+- Replace hand-rolled tree builder with `ztree.TreeBuilder` and `popRaw()` from ztree v0.6.0.
+- Update DESIGN.md architecture diagram.
+
 ## [1.0.0] — 2026-02-24
 
 ### Breaking Changes
