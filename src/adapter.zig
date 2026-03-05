@@ -6,20 +6,20 @@ const md = @import("bun-md");
 
 const Node = ztree.Node;
 const Allocator = std.mem.Allocator;
+const TreeBuilder = ztree.TreeBuilder;
 const BlockType = md.BlockType;
 const SpanType = md.SpanType;
 const TextType = md.TextType;
 const SpanDetail = md.SpanDetail;
-const ManagedNodeList = std.array_list.Managed(Node);
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-pub fn parse(allocator: Allocator, input: []const u8) error{ OutOfMemory, StackOverflow }!Node {
+pub fn parse(allocator: Allocator, input: []const u8) !Node {
     const src = skipBom(input);
-    var b = TreeBuilder.init(allocator, src);
+    var b = Adapter.init(allocator, src);
     md.renderWithRenderer(input, allocator, .{}, .{
         .ptr = @ptrCast(&b),
-        .vtable = &TreeBuilder.vtable,
+        .vtable = &Adapter.vtable,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StackOverflow => return error.StackOverflow,
@@ -32,17 +32,11 @@ fn skipBom(s: []const u8) []const u8 {
     return if (s.len >= 3 and s[0] == 0xEF and s[1] == 0xBB and s[2] == 0xBF) s[3..] else s;
 }
 
-// ─── Tree builder ──────────────────────────────────────────────────────────
+// ─── Adapter ───────────────────────────────────────────────────────────────
 
-const Frame = struct {
-    tag: []const u8,
-    attrs: []const ztree.Attr,
-    children: ManagedNodeList,
-};
-
-const TreeBuilder = struct {
+const Adapter = struct {
+    builder: TreeBuilder,
     alloc: Allocator,
-    stack: std.array_list.Managed(Frame),
     src: []const u8,
 
     const vtable = md.Renderer.VTable{
@@ -53,65 +47,28 @@ const TreeBuilder = struct {
         .text = onText,
     };
 
-    fn init(alloc: Allocator, src: []const u8) TreeBuilder {
-        var stack = std.array_list.Managed(Frame).init(alloc);
-        stack.append(.{ .tag = "", .attrs = &.{}, .children = ManagedNodeList.init(alloc) }) catch {};
-        return .{ .alloc = alloc, .stack = stack, .src = src };
+    fn init(alloc: Allocator, src: []const u8) Adapter {
+        return .{ .builder = TreeBuilder.init(alloc), .alloc = alloc, .src = src };
     }
 
-    fn finish(self: *TreeBuilder) Node {
-        var root = &self.stack.items[0];
-        const children = root.children.toOwnedSlice() catch &.{};
-        return if (children.len == 1) children[0] else .{ .fragment = children };
-    }
-
-    // ── Stack operations ───────────────────────────────────────────────
-
-    fn top(self: *TreeBuilder) *Frame {
-        return &self.stack.items[self.stack.items.len - 1];
-    }
-
-    fn push(self: *TreeBuilder, tag: []const u8, attrs: []const ztree.Attr) void {
-        self.stack.append(.{ .tag = tag, .attrs = attrs, .children = ManagedNodeList.init(self.alloc) }) catch {};
-    }
-
-    fn pop(self: *TreeBuilder) void {
-        var f = self.stack.pop() orelse return;
-        const children = f.children.toOwnedSlice() catch &.{};
-        self.emit(.{ .element = .{ .tag = f.tag, .attrs = f.attrs, .children = children } });
-    }
-
-    fn emit(self: *TreeBuilder, node: Node) void {
-        self.top().children.append(node) catch {};
+    fn finish(self: *Adapter) !Node {
+        return self.builder.finish() catch |err| switch (err) {
+            error.UnclosedElement => {
+                // Silently close unclosed elements (parser guarantees balance,
+                // but be defensive). Force-drain the stack.
+                while (self.builder.depth() > 0) {
+                    self.builder.close() catch break;
+                }
+                return self.builder.finish() catch return .{ .fragment = &.{} };
+            },
+            error.OutOfMemory => return error.OutOfMemory,
+        };
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
 
-    fn dupe(self: *TreeBuilder, s: []const u8) []const u8 {
+    fn dupe(self: *Adapter, s: []const u8) []const u8 {
         return self.alloc.dupe(u8, s) catch "";
-    }
-
-    fn copyNode(self: *TreeBuilder, content: []const u8, comptime tag: enum { text, raw }) void {
-        const owned = self.alloc.alloc(u8, content.len) catch return;
-        @memcpy(owned, content);
-        self.emit(if (tag == .text) .{ .text = owned } else .{ .raw = owned });
-    }
-
-    fn attr1(self: *TreeBuilder, key: []const u8, value: ?[]const u8) []const ztree.Attr {
-        const a = self.alloc.alloc(ztree.Attr, 1) catch return &.{};
-        a[0] = .{ .key = key, .value = value };
-        return a;
-    }
-
-    fn attr2(self: *TreeBuilder, k1: []const u8, v1: ?[]const u8, k2: []const u8, v2: ?[]const u8) []const ztree.Attr {
-        const a = self.alloc.alloc(ztree.Attr, 2) catch return &.{};
-        a[0] = .{ .key = k1, .value = v1 };
-        a[1] = .{ .key = k2, .value = v2 };
-        return a;
-    }
-
-    fn pushWith(self: *TreeBuilder, tag: []const u8, key: []const u8, value: []const u8) void {
-        self.push(tag, self.attr1(key, self.dupe(value)));
     }
 
     const h_tags = [_][]const u8{ "h1", "h1", "h2", "h3", "h4", "h5", "h6" };
@@ -120,76 +77,7 @@ const TreeBuilder = struct {
         return if (level >= 1 and level <= 6) h_tags[level] else "h6";
     }
 
-    // ── Block events ───────────────────────────────────────────────────
-
-    fn onEnterBlock(ptr: *anyopaque, block_type: BlockType, data: u32, flags: u32) error{}!void {
-        const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
-        switch (block_type) {
-            .doc, .html => {},
-            .quote => self.push("blockquote", &.{}),
-            .ul => self.push("ul", &.{}),
-            .p => self.push("p", &.{}),
-            .table => self.push("table", &.{}),
-            .thead => self.push("thead", &.{}),
-            .tbody => self.push("tbody", &.{}),
-            .tr => self.push("tr", &.{}),
-            .h => self.push(headingTag(data), &.{}),
-            .hr => self.emit(ztree.closedElement(self.alloc, "hr", &.{}) catch return),
-            .ol => {
-                if (data == 1) {
-                    self.push("ol", &.{});
-                } else {
-                    const s = std.fmt.allocPrint(self.alloc, "{d}", .{data}) catch "";
-                    self.push("ol", self.attr1("start", s));
-                }
-            },
-            .li => {
-                self.push("li", &.{});
-                const mark = md.types.taskMarkFromData(data);
-                if (mark != 0) {
-                    if (md.types.isTaskChecked(mark)) {
-                        self.emit(ztree.closedElement(self.alloc, "input", self.attr2("type", "checkbox", "checked", null)) catch return);
-                    } else {
-                        self.emit(ztree.closedElement(self.alloc, "input", self.attr1("type", "checkbox")) catch return);
-                    }
-                }
-            },
-            .code => {
-                self.push("pre", &.{});
-                if (flags & md.BLOCK_FENCED_CODE != 0 and data < self.src.len) {
-                    const lang = self.extractLang(data);
-                    if (lang.len > 0) {
-                        const cls = std.fmt.allocPrint(self.alloc, "language-{s}", .{lang}) catch "";
-                        self.push("code", self.attr1("class", cls));
-                    } else {
-                        self.push("code", &.{});
-                    }
-                } else {
-                    self.push("code", &.{});
-                }
-            },
-            .th, .td => {
-                const tag: []const u8 = if (block_type == .th) "th" else "td";
-                if (md.types.alignmentName(md.types.alignmentFromData(data))) |name| {
-                    const val = std.fmt.allocPrint(self.alloc, "text-align: {s}", .{name}) catch "";
-                    self.push(tag, self.attr1("style", val));
-                } else {
-                    self.push(tag, &.{});
-                }
-            },
-        }
-    }
-
-    fn onLeaveBlock(ptr: *anyopaque, block_type: BlockType, _: u32) error{}!void {
-        const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
-        switch (block_type) {
-            .doc, .hr, .html => {},
-            .code => { self.pop(); self.pop(); }, // code + pre
-            else => self.pop(),
-        }
-    }
-
-    fn extractLang(self: *TreeBuilder, offset: u32) []const u8 {
+    fn extractLang(self: *Adapter, offset: u32) []const u8 {
         var end: usize = offset;
         while (end < self.src.len and self.src[end] != ' ' and
             self.src[end] != '\t' and self.src[end] != '\n' and self.src[end] != '\r')
@@ -197,42 +85,146 @@ const TreeBuilder = struct {
         return if (end > offset) self.src[offset..end] else "";
     }
 
+    // ── Block events ───────────────────────────────────────────────────
+
+    fn onEnterBlock(ptr: *anyopaque, block_type: BlockType, data: u32, flags: u32) error{}!void {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var b = &self.builder;
+        switch (block_type) {
+            .doc, .html => {},
+            .quote => b.open("blockquote", .{}) catch {},
+            .ul => b.open("ul", .{}) catch {},
+            .p => b.open("p", .{}) catch {},
+            .table => b.open("table", .{}) catch {},
+            .thead => b.open("thead", .{}) catch {},
+            .tbody => b.open("tbody", .{}) catch {},
+            .tr => b.open("tr", .{}) catch {},
+            .h => b.open(headingTag(data), .{}) catch {},
+            .hr => b.closedElement("hr", .{}) catch {},
+            .ol => {
+                if (data == 1) {
+                    b.open("ol", .{}) catch {};
+                } else {
+                    const s = std.fmt.allocPrint(self.alloc, "{d}", .{data}) catch "";
+                    b.open("ol", self.alloc.dupe(ztree.Attr, &.{.{ .key = "start", .value = s }}) catch &.{}) catch {};
+                }
+            },
+            .li => {
+                b.open("li", .{}) catch {};
+                const mark = md.types.taskMarkFromData(data);
+                if (mark != 0) {
+                    if (md.types.isTaskChecked(mark)) {
+                        b.closedElement("input", self.alloc.dupe(ztree.Attr, &.{
+                            .{ .key = "type", .value = "checkbox" },
+                            .{ .key = "checked", .value = null },
+                        }) catch &.{}) catch {};
+                    } else {
+                        b.closedElement("input", self.alloc.dupe(ztree.Attr, &.{
+                            .{ .key = "type", .value = "checkbox" },
+                        }) catch &.{}) catch {};
+                    }
+                }
+            },
+            .code => {
+                b.open("pre", .{}) catch {};
+                if (flags & md.BLOCK_FENCED_CODE != 0 and data < self.src.len) {
+                    const lang = self.extractLang(data);
+                    if (lang.len > 0) {
+                        const cls = std.fmt.allocPrint(self.alloc, "language-{s}", .{lang}) catch "";
+                        b.open("code", self.alloc.dupe(ztree.Attr, &.{.{ .key = "class", .value = cls }}) catch &.{}) catch {};
+                    } else {
+                        b.open("code", .{}) catch {};
+                    }
+                } else {
+                    b.open("code", .{}) catch {};
+                }
+            },
+            .th, .td => {
+                const tag: []const u8 = if (block_type == .th) "th" else "td";
+                if (md.types.alignmentName(md.types.alignmentFromData(data))) |name| {
+                    const val = std.fmt.allocPrint(self.alloc, "text-align: {s}", .{name}) catch "";
+                    b.open(tag, self.alloc.dupe(ztree.Attr, &.{.{ .key = "style", .value = val }}) catch &.{}) catch {};
+                } else {
+                    b.open(tag, .{}) catch {};
+                }
+            },
+        }
+    }
+
+    fn onLeaveBlock(ptr: *anyopaque, block_type: BlockType, _: u32) error{}!void {
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var b = &self.builder;
+        switch (block_type) {
+            .doc, .hr, .html => {},
+            .code => { b.close() catch {}; b.close() catch {}; }, // code + pre
+            else => b.close() catch {},
+        }
+    }
+
     // ── Span events ────────────────────────────────────────────────────
 
     fn onEnterSpan(ptr: *anyopaque, span_type: SpanType, detail: SpanDetail) error{}!void {
-        const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var b = &self.builder;
         switch (span_type) {
-            .em => self.push("em", &.{}),
-            .strong => self.push("strong", &.{}),
-            .u => self.push("u", &.{}),
-            .code => self.push("code", &.{}),
-            .del => self.push("del", &.{}),
-            .latexmath, .latexmath_display => self.push("x-equation", &.{}),
-            .a, .wikilink => self.pushWith("a", "href", detail.href),
-            .img => self.pushWith("img", "src", detail.href),
+            .em => b.open("em", .{}) catch {},
+            .strong => b.open("strong", .{}) catch {},
+            .u => b.open("u", .{}) catch {},
+            .code => b.open("code", .{}) catch {},
+            .del => b.open("del", .{}) catch {},
+            .latexmath, .latexmath_display => b.open("x-equation", .{}) catch {},
+            .a, .wikilink => {
+                const href = self.dupe(detail.href);
+                b.open("a", self.alloc.dupe(ztree.Attr, &.{.{ .key = "href", .value = href }}) catch &.{}) catch {};
+            },
+            .img => {
+                const src_val = self.dupe(detail.href);
+                b.open("img", self.alloc.dupe(ztree.Attr, &.{.{ .key = "src", .value = src_val }}) catch &.{}) catch {};
+            },
         }
     }
 
     fn onLeaveSpan(ptr: *anyopaque, span_type: SpanType) error{}!void {
-        const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var b = &self.builder;
         if (span_type == .img) {
-            const f = self.stack.pop() orelse return;
-            const alt = collectText(self.alloc, f.children.items);
-            const src_val = if (f.attrs.len > 0) f.attrs[0].value orelse "" else "";
-            self.emit(ztree.closedElement(self.alloc, "img", self.attr2("src", src_val, "alt", alt)) catch return);
-        } else self.pop();
+            // Images: pop the frame, collect alt text from children,
+            // then emit a closed <img src="..." alt="..."> element.
+            const f = b.popRaw() catch return;
+            const src_val = for (f.attrs) |a| {
+                if (std.mem.eql(u8, a.key, "src")) break a.value orelse "";
+            } else "";
+            const alt = collectText(self.alloc, f.children);
+            b.closedElement("img", self.alloc.dupe(ztree.Attr, &.{
+                .{ .key = "src", .value = src_val },
+                .{ .key = "alt", .value = alt },
+            }) catch &.{}) catch {};
+        } else b.close() catch {};
     }
 
     // ── Text events ────────────────────────────────────────────────────
 
     fn onText(ptr: *anyopaque, text_type: TextType, content: []const u8) error{}!void {
-        const self: *TreeBuilder = @ptrCast(@alignCast(ptr));
+        const self: *Adapter = @ptrCast(@alignCast(ptr));
+        var b = &self.builder;
         switch (text_type) {
-            .normal, .code, .entity, .latexmath => self.copyNode(content, .text),
-            .html => self.copyNode(content, .raw),
-            .null_char => self.copyNode("\u{FFFD}", .text),
-            .br => self.emit(ztree.closedElement(self.alloc, "br", &.{}) catch return),
-            .softbr => self.copyNode("\n", .text),
+            .normal, .code, .entity, .latexmath => {
+                const owned = self.alloc.dupe(u8, content) catch return;
+                b.text(owned) catch {};
+            },
+            .html => {
+                const owned = self.alloc.dupe(u8, content) catch return;
+                b.raw(owned) catch {};
+            },
+            .null_char => {
+                const owned = self.alloc.dupe(u8, "\u{FFFD}") catch return;
+                b.text(owned) catch {};
+            },
+            .br => b.closedElement("br", .{}) catch {},
+            .softbr => {
+                const owned = self.alloc.dupe(u8, "\n") catch return;
+                b.text(owned) catch {};
+            },
         }
     }
 };
@@ -240,17 +232,17 @@ const TreeBuilder = struct {
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
 fn collectText(allocator: Allocator, nodes: []const Node) []const u8 {
-    var buf = std.array_list.Managed(u8).init(allocator);
-    collectInto(&buf, nodes);
-    return buf.toOwnedSlice() catch "";
+    var buf: std.ArrayList(u8) = .empty;
+    collectInto(&buf, allocator, nodes);
+    return buf.toOwnedSlice(allocator) catch "";
 }
 
-fn collectInto(buf: *std.array_list.Managed(u8), nodes: []const Node) void {
+fn collectInto(buf: *std.ArrayList(u8), alloc: Allocator, nodes: []const Node) void {
     for (nodes) |n| switch (n) {
-        .text => |t| buf.appendSlice(t) catch {},
-        .raw => |r| buf.appendSlice(r) catch {},
-        .element => |el| collectInto(buf, el.children),
-        .fragment => |ch| collectInto(buf, ch),
+        .text => |t| buf.appendSlice(alloc, t) catch {},
+        .raw => |r| buf.appendSlice(alloc, r) catch {},
+        .element => |el| collectInto(buf, alloc, el.children),
+        .fragment => |ch| collectInto(buf, alloc, ch),
     };
 }
 

@@ -33,7 +33,8 @@ task lists, autolinks).
 
 bun-md is a SAX-style parser: it emits enter/leave/text events. The
 **adapter** (`src/adapter.zig`) converts this event stream into a ztree
-`Node` tree using a stack-based builder.
+`Node` tree using `ztree.TreeBuilder` — the library's imperative tree
+builder designed for exactly this kind of SAX-to-tree conversion.
 
 ```
 Input: []const u8
@@ -48,13 +49,14 @@ bun-md parser (SAX events)
   │  leaveBlock(.h, 1)
   │
   ▼
-adapter (stack-based tree builder)
-  │  push frame "h1"
-  │  append text "Hello "
-  │  push frame "strong"
-  │  append text "world"
-  │  pop frame → element("strong", ...)
-  │  pop frame → element("h1", ...)
+adapter → ztree.TreeBuilder
+  │  b.open("h1", .{})
+  │  b.text("Hello ")
+  │  b.open("strong", .{})
+  │  b.text("world")
+  │  b.close()            // → element("strong", ...)
+  │  b.close()            // → element("h1", ...)
+  │  b.finish()
   │
   ▼
 Output: ztree.Node
@@ -91,7 +93,7 @@ const tree = try parse(arena.allocator(), markdown_input);
 ```
 src/
   root.zig         — public API (parse function)
-  adapter.zig      — SAX-to-tree adapter (TreeBuilder + tests)
+  adapter.zig      — SAX-to-tree adapter (uses ztree.TreeBuilder + tests)
   shim/
     bun.zig        — stdlib shim for bun-md's @import("bun")
 ```

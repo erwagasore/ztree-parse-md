@@ -12,7 +12,7 @@ const adapter = @import("adapter.zig");
 ///
 /// The returned tree is allocated with `allocator`. Call `arena.deinit()`
 /// (if using an arena) to free everything at once.
-pub fn parse(allocator: std.mem.Allocator, input: []const u8) error{ OutOfMemory, StackOverflow }!ztree.Node {
+pub fn parse(allocator: std.mem.Allocator, input: []const u8) !ztree.Node {
     return adapter.parse(allocator, input);
 }
 
