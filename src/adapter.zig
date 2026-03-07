@@ -7,6 +7,7 @@ const md = @import("bun-md");
 const Node = ztree.Node;
 const Allocator = std.mem.Allocator;
 const TreeBuilder = ztree.TreeBuilder;
+const attr = ztree.attr;
 const BlockType = md.BlockType;
 const SpanType = md.SpanType;
 const TextType = md.TextType;
@@ -106,23 +107,18 @@ const Adapter = struct {
                     b.open("ol", .{}) catch {};
                 } else {
                     const s = std.fmt.allocPrint(self.alloc, "{d}", .{data}) catch "";
-                    b.open("ol", self.alloc.dupe(ztree.Attr, &.{.{ .key = "start", .value = s }}) catch &.{}) catch {};
+                    b.open("ol", .{attr("start", s)}) catch {};
                 }
             },
             .li => {
                 b.open("li", .{}) catch {};
                 const mark = md.types.taskMarkFromData(data);
                 if (mark != 0) {
-                    if (md.types.isTaskChecked(mark)) {
-                        b.closedElement("input", self.alloc.dupe(ztree.Attr, &.{
-                            .{ .key = "type", .value = "checkbox" },
-                            .{ .key = "checked", .value = null },
-                        }) catch &.{}) catch {};
-                    } else {
-                        b.closedElement("input", self.alloc.dupe(ztree.Attr, &.{
-                            .{ .key = "type", .value = "checkbox" },
-                        }) catch &.{}) catch {};
-                    }
+                    const checked = md.types.isTaskChecked(mark);
+                    b.closedElement("input", .{
+                        attr("type", "checkbox"),
+                        if (checked) attr("checked", null) else null,
+                    }) catch {};
                 }
             },
             .code => {
@@ -131,7 +127,7 @@ const Adapter = struct {
                     const lang = self.extractLang(data);
                     if (lang.len > 0) {
                         const cls = std.fmt.allocPrint(self.alloc, "language-{s}", .{lang}) catch "";
-                        b.open("code", self.alloc.dupe(ztree.Attr, &.{.{ .key = "class", .value = cls }}) catch &.{}) catch {};
+                        b.open("code", .{attr("class", cls)}) catch {};
                     } else {
                         b.open("code", .{}) catch {};
                     }
@@ -143,7 +139,7 @@ const Adapter = struct {
                 const tag: []const u8 = if (block_type == .th) "th" else "td";
                 if (md.types.alignmentName(md.types.alignmentFromData(data))) |name| {
                     const val = std.fmt.allocPrint(self.alloc, "text-align: {s}", .{name}) catch "";
-                    b.open(tag, self.alloc.dupe(ztree.Attr, &.{.{ .key = "style", .value = val }}) catch &.{}) catch {};
+                    b.open(tag, .{attr("style", val)}) catch {};
                 } else {
                     b.open(tag, .{}) catch {};
                 }
@@ -175,11 +171,11 @@ const Adapter = struct {
             .latexmath, .latexmath_display => b.open("x-equation", .{}) catch {},
             .a, .wikilink => {
                 const href = self.dupe(detail.href);
-                b.open("a", self.alloc.dupe(ztree.Attr, &.{.{ .key = "href", .value = href }}) catch &.{}) catch {};
+                b.open("a", .{attr("href", href)}) catch {};
             },
             .img => {
                 const src_val = self.dupe(detail.href);
-                b.open("img", self.alloc.dupe(ztree.Attr, &.{.{ .key = "src", .value = src_val }}) catch &.{}) catch {};
+                b.open("img", .{attr("src", src_val)}) catch {};
             },
         }
     }
@@ -195,10 +191,10 @@ const Adapter = struct {
                 if (std.mem.eql(u8, a.key, "src")) break a.value orelse "";
             } else "";
             const alt = collectText(self.alloc, f.children);
-            b.closedElement("img", self.alloc.dupe(ztree.Attr, &.{
-                .{ .key = "src", .value = src_val },
-                .{ .key = "alt", .value = alt },
-            }) catch &.{}) catch {};
+            b.closedElement("img", .{
+                attr("src", src_val),
+                attr("alt", alt),
+            }) catch {};
         } else b.close() catch {};
     }
 
@@ -471,6 +467,24 @@ test "lazy blockquote continuation" {
     const bq = try expectElement(node, "blockquote");
     const p = try expectElement(bq[0], "p");
     try testing.expect(p.len >= 1);
+}
+
+test "void elements have closed flag" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    // <hr> is a void element — must have closed=true.
+    const hr = try parse(arena.allocator(), "---");
+    try testing.expect(hr.element.closed);
+
+    // <br> inside a paragraph.
+    const br_doc = try parse(arena.allocator(), "foo  \nbar");
+    const p = try expectElement(br_doc, "p");
+    try testing.expect(p[1].element.closed);
+
+    // <img> is a void element.
+    const img_doc = try parse(arena.allocator(), "![alt](/img.png)");
+    const img_p = try expectElement(img_doc, "p");
+    try testing.expect(img_p[0].element.closed);
 }
 
 test "empty input" {
