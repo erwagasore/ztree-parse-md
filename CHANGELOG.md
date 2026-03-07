@@ -1,5 +1,14 @@
 # Changelog
 
+## [1.1.0] — 2026-03-06
+
+### Features
+
+- Upgrade ztree dependency from v0.6.0 to v0.9.0 — picks up `Element.closed` field for void elements, `TreeBuilder.Error` type, `addNode()`, and tuple attrs support.
+- Adopt tuple attrs throughout the adapter, replacing verbose manual `Attr` slice construction with ergonomic `.{ attr("key", "val") }` syntax.
+- Collapse checked/unchecked task list branches into a single conditional tuple expression.
+- Add test verifying `closed` flag on void elements (`hr`, `br`, `img`).
+
 ## [1.0.1] — 2026-03-05
 
 ### Fixes
