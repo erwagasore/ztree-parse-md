@@ -1,5 +1,11 @@
 # Changelog
 
+## [1.2.0] — 2026-03-08
+
+### Features
+
+- Upgrade ztree dependency from v0.9.0 to v1.0.0 — picks up `WalkAction` for `renderWalk`, enabling downstream renderers to handle complex elements (tables, code blocks) entirely in `elementOpen` by returning `.skip_children`. Makes the tree fully usable by non-HTML renderers (Markdown, JSON, Ziggy, etc.) without subtree buffering.
+
 ## [1.1.0] — 2026-03-06
 
 ### Features
