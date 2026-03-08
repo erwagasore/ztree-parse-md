@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.3.0] — 2026-03-08
+
+### Features
+
+- Upgrade ztree dependency from v1.0.0 to v1.2.0 — picks up `Element.getAttr()`/`Element.hasAttr()` for attribute lookup and `Walker` type-erased re-entrant walker for downstream renderers.
+- Replace manual attribute scan in test helper with `Element.getAttr()`.
+
 ## [1.2.0] — 2026-03-08
 
 ### Features

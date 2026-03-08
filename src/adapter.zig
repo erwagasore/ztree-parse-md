@@ -259,10 +259,7 @@ fn expectText(node: Node, expected: []const u8) !void {
 
 fn expectAttr(node: Node, key: []const u8) ?[]const u8 {
     if (std.meta.activeTag(node) != .element) return null;
-    for (node.element.attrs) |a| {
-        if (std.mem.eql(u8, a.key, key)) return a.value;
-    }
-    return null;
+    return node.element.getAttr(key);
 }
 
 test "heading" {
