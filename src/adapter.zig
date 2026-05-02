@@ -16,17 +16,24 @@ const SpanDetail = md.SpanDetail;
 // ─── Public API ────────────────────────────────────────────────────────────
 
 pub const ParseError = error{
+    /// Allocation failed while parsing or building the output tree.
     OutOfMemory,
+    /// Markdown nesting exceeded the backend parser recursion guard.
     StackOverflow,
+    /// The backend emitted an invalid event sequence or terminated unexpectedly.
     InvalidMarkdownTree,
 };
 
 pub fn parse(arena: Allocator, input: []const u8) ParseError!Node {
+    return parseWithScratch(arena, arena, input);
+}
+
+pub fn parseWithScratch(arena: Allocator, scratch: Allocator, input: []const u8) ParseError!Node {
     const src = skipBom(input);
     var b = Adapter.init(arena, src);
     defer b.deinit();
 
-    md.renderWithRenderer(src, arena, .{}, .{
+    md.renderWithRenderer(src, scratch, .{}, .{
         .ptr = @ptrCast(&b),
         .vtable = &Adapter.vtable,
     }) catch |err| switch (err) {
@@ -107,10 +114,15 @@ const Adapter = struct {
         };
     }
 
-    const h_tags = [_][]const u8{ "h1", "h1", "h2", "h3", "h4", "h5", "h6" };
-
     fn headingTag(level: u32) []const u8 {
-        return if (level >= 1 and level <= 6) h_tags[level] else "h6";
+        return switch (level) {
+            1 => "h1",
+            2 => "h2",
+            3 => "h3",
+            4 => "h4",
+            5 => "h5",
+            else => "h6",
+        };
     }
 
     fn extractLang(self: *Adapter, offset: u32) []const u8 {

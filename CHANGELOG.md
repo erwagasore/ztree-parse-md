@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Features
+
+- Upgrade ztree dependency to v2.1.0 for latest TreeBuilder and allocation-safety fixes.
+- Add `parseWithScratch()` for callers that want separate output-tree and parser-scratch allocators.
+
+### Other
+
+- Document raw HTML safety expectations for downstream renderers.
+
 ## [2.0.0] — 2026-05-02
 
 ### Breaking Changes

@@ -7,6 +7,7 @@ GFM Markdown parser for ztree. Parses Markdown text into a ztree `Node` tree.
 ```zig
 pub const ParseError = error{ OutOfMemory, StackOverflow, InvalidMarkdownTree };
 pub fn parse(arena: std.mem.Allocator, input: []const u8) ParseError!ztree.Node
+pub fn parseWithScratch(arena: std.mem.Allocator, scratch: std.mem.Allocator, input: []const u8) ParseError!ztree.Node
 pub fn parseOwned(backing_allocator: std.mem.Allocator, input: []const u8) ParseError!Document
 ```
 
@@ -78,6 +79,8 @@ Output: ztree.Node          (allocated via provided arena)
 Text nodes: copied           (parser uses internal buffers; text is
                               copied into arena during tree building)
 Structure: []Node, []Attr   (arena-allocated)
+Scratch parser memory:      (allocated via scratch allocator when using
+                              parseWithScratch; otherwise via arena)
 ```
 
 Caller-managed arena usage:
@@ -90,6 +93,16 @@ const tree = try parse(arena.allocator(), markdown_input);
 // arena.deinit() frees everything
 ```
 
+Separate scratch allocator usage:
+
+```zig
+var arena = std.heap.ArenaAllocator.init(allocator);
+defer arena.deinit();
+const tree = try parseWithScratch(arena.allocator(), allocator, markdown_input);
+// scratch owns temporary parser allocations only;
+// tree data remains in arena
+```
+
 Owned-document usage:
 
 ```zig
@@ -97,6 +110,9 @@ var doc = try parseOwned(allocator, markdown_input);
 defer doc.deinit();
 const tree = doc.root;
 ```
+
+Raw HTML in Markdown is preserved as `raw()` nodes. Downstream HTML renderers
+must sanitize untrusted input before or during rendering.
 
 ## File structure
 

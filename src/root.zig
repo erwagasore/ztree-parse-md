@@ -31,13 +31,21 @@ pub fn parse(arena: std.mem.Allocator, input: []const u8) ParseError!Node {
     return adapter.parse(arena, input);
 }
 
+/// Parse Markdown text into a ztree Node tree using separate scratch memory.
+///
+/// `arena` owns the returned tree. `scratch` is used only while parsing and may
+/// be freed immediately after this function returns.
+pub fn parseWithScratch(arena: std.mem.Allocator, scratch: std.mem.Allocator, input: []const u8) ParseError!Node {
+    return adapter.parseWithScratch(arena, scratch, input);
+}
+
 /// Parse Markdown text into an owned arena-backed document.
 pub fn parseOwned(backing_allocator: std.mem.Allocator, input: []const u8) ParseError!Document {
     var arena = std.heap.ArenaAllocator.init(backing_allocator);
     errdefer arena.deinit();
 
     return .{
-        .root = try parse(arena.allocator(), input),
+        .root = try parseWithScratch(arena.allocator(), backing_allocator, input),
         .arena = arena,
     };
 }
@@ -48,6 +56,19 @@ test "parseOwned returns arena-backed document" {
 
     try std.testing.expectEqual(.element, std.meta.activeTag(doc.root));
     try std.testing.expectEqualStrings("h1", doc.root.element.tag);
+}
+
+test "parseWithScratch output outlives scratch allocator" {
+    var tree_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer tree_arena.deinit();
+
+    var scratch_arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    const root = try parseWithScratch(tree_arena.allocator(), scratch_arena.allocator(), "# Hello");
+    scratch_arena.deinit();
+
+    try std.testing.expectEqual(.element, std.meta.activeTag(root));
+    try std.testing.expectEqualStrings("h1", root.element.tag);
+    try std.testing.expectEqualStrings("Hello", root.element.children[0].text);
 }
 
 test {
