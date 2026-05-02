@@ -15,16 +15,24 @@ const SpanDetail = md.SpanDetail;
 
 // ─── Public API ────────────────────────────────────────────────────────────
 
-pub fn parse(allocator: Allocator, input: []const u8) !Node {
+pub const ParseError = error{
+    OutOfMemory,
+    StackOverflow,
+    InvalidMarkdownTree,
+};
+
+pub fn parse(arena: Allocator, input: []const u8) ParseError!Node {
     const src = skipBom(input);
-    var b = Adapter.init(allocator, src);
-    md.renderWithRenderer(input, allocator, .{}, .{
+    var b = Adapter.init(arena, src);
+    defer b.deinit();
+
+    md.renderWithRenderer(src, arena, .{}, .{
         .ptr = @ptrCast(&b),
         .vtable = &Adapter.vtable,
     }) catch |err| switch (err) {
         error.OutOfMemory => return error.OutOfMemory,
         error.StackOverflow => return error.StackOverflow,
-        error.JSError, error.JSTerminated => unreachable,
+        error.JSError, error.JSTerminated => return error.InvalidMarkdownTree,
     };
     return b.finish();
 }
@@ -52,24 +60,51 @@ const Adapter = struct {
         return .{ .builder = TreeBuilder.init(alloc), .alloc = alloc, .src = src };
     }
 
-    fn finish(self: *Adapter) !Node {
+    fn deinit(self: *Adapter) void {
+        self.builder.deinit();
+    }
+
+    fn finish(self: *Adapter) ParseError!Node {
         return self.builder.finish() catch |err| switch (err) {
-            error.UnclosedElement => {
-                // Silently close unclosed elements (parser guarantees balance,
-                // but be defensive). Force-drain the stack.
-                while (self.builder.depth() > 0) {
-                    self.builder.close() catch break;
-                }
-                return self.builder.finish() catch return .{ .fragment = &.{} };
-            },
+            error.UnclosedElement => return error.InvalidMarkdownTree,
             error.OutOfMemory => return error.OutOfMemory,
         };
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
 
-    fn dupe(self: *Adapter, s: []const u8) []const u8 {
-        return self.alloc.dupe(u8, s) catch "";
+    const CallbackError = error{ JSError, JSTerminated, OutOfMemory };
+
+    fn dupe(self: *Adapter, s: []const u8) CallbackError![]const u8 {
+        return self.alloc.dupe(u8, s) catch return error.OutOfMemory;
+    }
+
+    fn fmt(self: *Adapter, comptime format: []const u8, args: anytype) CallbackError![]const u8 {
+        return std.fmt.allocPrint(self.alloc, format, args) catch return error.OutOfMemory;
+    }
+
+    fn hrefValue(self: *Adapter, detail: SpanDetail) CallbackError![]const u8 {
+        if (detail.autolink_email) return self.fmt("mailto:{s}", .{detail.href});
+        if (detail.autolink_www) return self.fmt("http://{s}", .{detail.href});
+        return self.dupe(detail.href);
+    }
+
+    fn optionalTitle(self: *Adapter, detail: SpanDetail) CallbackError!?[]const u8 {
+        return if (detail.title.len > 0) try self.dupe(detail.title) else null;
+    }
+
+    fn closeBuilder(b: *TreeBuilder) CallbackError!void {
+        b.close() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ExtraClose => return error.JSError,
+        };
+    }
+
+    fn popRawBuilder(b: *TreeBuilder) CallbackError!TreeBuilder.PopResult {
+        return b.popRaw() catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            error.ExtraClose => return error.JSError,
+        };
     }
 
     const h_tags = [_][]const u8{ "h1", "h1", "h2", "h3", "h4", "h5", "h6" };
@@ -88,138 +123,153 @@ const Adapter = struct {
 
     // ── Block events ───────────────────────────────────────────────────
 
-    fn onEnterBlock(ptr: *anyopaque, block_type: BlockType, data: u32, flags: u32) error{}!void {
+    fn onEnterBlock(ptr: *anyopaque, block_type: BlockType, data: u32, flags: u32) CallbackError!void {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var b = &self.builder;
+        const b = &self.builder;
         switch (block_type) {
             .doc, .html => {},
-            .quote => b.open("blockquote", .{}) catch {},
-            .ul => b.open("ul", .{}) catch {},
-            .p => b.open("p", .{}) catch {},
-            .table => b.open("table", .{}) catch {},
-            .thead => b.open("thead", .{}) catch {},
-            .tbody => b.open("tbody", .{}) catch {},
-            .tr => b.open("tr", .{}) catch {},
-            .h => b.open(headingTag(data), .{}) catch {},
-            .hr => b.closedElement("hr", .{}) catch {},
+            .quote => try b.open("blockquote", .{}),
+            .ul => try b.open("ul", .{}),
+            .p => try b.open("p", .{}),
+            .table => try b.open("table", .{}),
+            .thead => try b.open("thead", .{}),
+            .tbody => try b.open("tbody", .{}),
+            .tr => try b.open("tr", .{}),
+            .h => try b.open(headingTag(data), .{}),
+            .hr => try b.closedElement("hr", .{}),
             .ol => {
                 if (data == 1) {
-                    b.open("ol", .{}) catch {};
+                    try b.open("ol", .{});
                 } else {
-                    const s = std.fmt.allocPrint(self.alloc, "{d}", .{data}) catch "";
-                    b.open("ol", .{attr("start", s)}) catch {};
+                    const s = try self.fmt("{d}", .{data});
+                    try b.open("ol", .{attr("start", s)});
                 }
             },
             .li => {
-                b.open("li", .{}) catch {};
+                try b.open("li", .{});
                 const mark = md.types.taskMarkFromData(data);
                 if (mark != 0) {
                     const checked = md.types.isTaskChecked(mark);
-                    b.closedElement("input", .{
+                    try b.closedElement("input", .{
                         attr("type", "checkbox"),
                         if (checked) attr("checked", null) else null,
-                    }) catch {};
+                    });
                 }
             },
             .code => {
-                b.open("pre", .{}) catch {};
+                try b.open("pre", .{});
                 if (flags & md.BLOCK_FENCED_CODE != 0 and data < self.src.len) {
                     const lang = self.extractLang(data);
                     if (lang.len > 0) {
-                        const cls = std.fmt.allocPrint(self.alloc, "language-{s}", .{lang}) catch "";
-                        b.open("code", .{attr("class", cls)}) catch {};
+                        const cls = try self.fmt("language-{s}", .{lang});
+                        try b.open("code", .{attr("class", cls)});
                     } else {
-                        b.open("code", .{}) catch {};
+                        try b.open("code", .{});
                     }
                 } else {
-                    b.open("code", .{}) catch {};
+                    try b.open("code", .{});
                 }
             },
             .th, .td => {
                 const tag: []const u8 = if (block_type == .th) "th" else "td";
                 if (md.types.alignmentName(md.types.alignmentFromData(data))) |name| {
-                    const val = std.fmt.allocPrint(self.alloc, "text-align: {s}", .{name}) catch "";
-                    b.open(tag, .{attr("style", val)}) catch {};
+                    const val = try self.fmt("text-align: {s}", .{name});
+                    try b.open(tag, .{attr("style", val)});
                 } else {
-                    b.open(tag, .{}) catch {};
+                    try b.open(tag, .{});
                 }
             },
         }
     }
 
-    fn onLeaveBlock(ptr: *anyopaque, block_type: BlockType, _: u32) error{}!void {
+    fn onLeaveBlock(ptr: *anyopaque, block_type: BlockType, _: u32) CallbackError!void {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var b = &self.builder;
+        const b = &self.builder;
         switch (block_type) {
             .doc, .hr, .html => {},
-            .code => { b.close() catch {}; b.close() catch {}; }, // code + pre
-            else => b.close() catch {},
+            .code => {
+                try closeBuilder(b);
+                try closeBuilder(b);
+            }, // code + pre
+            else => try closeBuilder(b),
         }
     }
 
     // ── Span events ────────────────────────────────────────────────────
 
-    fn onEnterSpan(ptr: *anyopaque, span_type: SpanType, detail: SpanDetail) error{}!void {
+    fn onEnterSpan(ptr: *anyopaque, span_type: SpanType, detail: SpanDetail) CallbackError!void {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var b = &self.builder;
+        const b = &self.builder;
         switch (span_type) {
-            .em => b.open("em", .{}) catch {},
-            .strong => b.open("strong", .{}) catch {},
-            .u => b.open("u", .{}) catch {},
-            .code => b.open("code", .{}) catch {},
-            .del => b.open("del", .{}) catch {},
-            .latexmath, .latexmath_display => b.open("x-equation", .{}) catch {},
+            .em => try b.open("em", .{}),
+            .strong => try b.open("strong", .{}),
+            .u => try b.open("u", .{}),
+            .code => try b.open("code", .{}),
+            .del => try b.open("del", .{}),
+            .latexmath, .latexmath_display => try b.open("x-equation", .{}),
             .a, .wikilink => {
-                const href = self.dupe(detail.href);
-                b.open("a", .{attr("href", href)}) catch {};
+                const href = try self.hrefValue(detail);
+                const title = try self.optionalTitle(detail);
+                try b.open("a", .{
+                    attr("href", href),
+                    if (title) |t| attr("title", t) else null,
+                });
             },
             .img => {
-                const src_val = self.dupe(detail.href);
-                b.open("img", .{attr("src", src_val)}) catch {};
+                const src_val = try self.hrefValue(detail);
+                const title = try self.optionalTitle(detail);
+                try b.open("img", .{
+                    attr("src", src_val),
+                    if (title) |t| attr("title", t) else null,
+                });
             },
         }
     }
 
-    fn onLeaveSpan(ptr: *anyopaque, span_type: SpanType) error{}!void {
+    fn onLeaveSpan(ptr: *anyopaque, span_type: SpanType) CallbackError!void {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var b = &self.builder;
+        const b = &self.builder;
         if (span_type == .img) {
             // Images: pop the frame, collect alt text from children,
             // then emit a closed <img src="..." alt="..."> element.
-            const f = b.popRaw() catch return;
+            const f = try popRawBuilder(b);
             const src_val = for (f.attrs) |a| {
                 if (std.mem.eql(u8, a.key, "src")) break a.value orelse "";
             } else "";
-            const alt = collectText(self.alloc, f.children);
-            b.closedElement("img", .{
+            const title = for (f.attrs) |a| {
+                if (std.mem.eql(u8, a.key, "title")) break a.value;
+            } else null;
+            const alt = try collectText(self.alloc, f.children);
+            try b.closedElement("img", .{
                 attr("src", src_val),
                 attr("alt", alt),
-            }) catch {};
-        } else b.close() catch {};
+                if (title) |t| attr("title", t) else null,
+            });
+        } else try closeBuilder(b);
     }
 
     // ── Text events ────────────────────────────────────────────────────
 
-    fn onText(ptr: *anyopaque, text_type: TextType, content: []const u8) error{}!void {
+    fn onText(ptr: *anyopaque, text_type: TextType, content: []const u8) CallbackError!void {
         const self: *Adapter = @ptrCast(@alignCast(ptr));
-        var b = &self.builder;
+        const b = &self.builder;
         switch (text_type) {
             .normal, .code, .entity, .latexmath => {
-                const owned = self.alloc.dupe(u8, content) catch return;
-                b.text(owned) catch {};
+                const owned = try self.dupe(content);
+                try b.text(owned);
             },
             .html => {
-                const owned = self.alloc.dupe(u8, content) catch return;
-                b.raw(owned) catch {};
+                const owned = try self.dupe(content);
+                try b.raw(owned);
             },
             .null_char => {
-                const owned = self.alloc.dupe(u8, "\u{FFFD}") catch return;
-                b.text(owned) catch {};
+                const owned = try self.dupe("\u{FFFD}");
+                try b.text(owned);
             },
-            .br => b.closedElement("br", .{}) catch {},
+            .br => try b.closedElement("br", .{}),
             .softbr => {
-                const owned = self.alloc.dupe(u8, "\n") catch return;
-                b.text(owned) catch {};
+                const owned = try self.dupe("\n");
+                try b.text(owned);
             },
         }
     }
@@ -227,18 +277,20 @@ const Adapter = struct {
 
 // ─── Helpers ───────────────────────────────────────────────────────────────
 
-fn collectText(allocator: Allocator, nodes: []const Node) []const u8 {
+fn collectText(allocator: Allocator, nodes: []const Node) Allocator.Error![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
-    collectInto(&buf, allocator, nodes);
-    return buf.toOwnedSlice(allocator) catch "";
+    errdefer buf.deinit(allocator);
+
+    try collectInto(&buf, allocator, nodes);
+    return buf.toOwnedSlice(allocator);
 }
 
-fn collectInto(buf: *std.ArrayList(u8), alloc: Allocator, nodes: []const Node) void {
+fn collectInto(buf: *std.ArrayList(u8), alloc: Allocator, nodes: []const Node) Allocator.Error!void {
     for (nodes) |n| switch (n) {
-        .text => |t| buf.appendSlice(alloc, t) catch {},
-        .raw => |r| buf.appendSlice(alloc, r) catch {},
-        .element => |el| collectInto(buf, alloc, el.children),
-        .fragment => |ch| collectInto(buf, alloc, ch),
+        .text => |t| try buf.appendSlice(alloc, t),
+        .raw => |r| try buf.appendSlice(alloc, r),
+        .element => |el| try collectInto(buf, alloc, el.children),
+        .fragment => |ch| try collectInto(buf, alloc, ch),
     };
 }
 
@@ -268,6 +320,20 @@ test "heading" {
     const node = try parse(arena.allocator(), "# Hello");
     const ch = try expectElement(node, "h1");
     try expectText(ch[0], "Hello");
+}
+
+test "utf-8 bom is skipped before parsing" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const node = try parse(arena.allocator(), "\xEF\xBB\xBF# Hello");
+    const ch = try expectElement(node, "h1");
+    try expectText(ch[0], "Hello");
+}
+
+test "allocation failure propagates" {
+    var buf: [0]u8 = .{};
+    var fba = std.heap.FixedBufferAllocator.init(&buf);
+    try testing.expectError(error.OutOfMemory, parse(fba.allocator(), "# Hello"));
 }
 
 test "heading levels" {
@@ -350,6 +416,18 @@ test "table" {
     _ = try expectElement(table[1], "tbody");
 }
 
+test "table alignment attrs" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const node = try parse(arena.allocator(), "| a | b | c |\n| :--- | :---: | ---: |\n| 1 | 2 | 3 |");
+    const table = try expectElement(node, "table");
+    const thead = try expectElement(table[0], "thead");
+    const tr = try expectElement(thead[0], "tr");
+    try testing.expectEqualStrings("text-align: left", expectAttr(tr[0], "style").?);
+    try testing.expectEqualStrings("text-align: center", expectAttr(tr[1], "style").?);
+    try testing.expectEqualStrings("text-align: right", expectAttr(tr[2], "style").?);
+}
+
 test "emphasis" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -387,6 +465,25 @@ test "link" {
     try expectText(a[0], "text");
 }
 
+test "link title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const node = try parse(arena.allocator(), "[text](/url \"Title\")");
+    const p = try expectElement(node, "p");
+    _ = try expectElement(p[0], "a");
+    try testing.expectEqualStrings("/url", expectAttr(p[0], "href").?);
+    try testing.expectEqualStrings("Title", expectAttr(p[0], "title").?);
+}
+
+test "email autolink href has mailto prefix" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const node = try parse(arena.allocator(), "<user@example.com>");
+    const p = try expectElement(node, "p");
+    _ = try expectElement(p[0], "a");
+    try testing.expectEqualStrings("mailto:user@example.com", expectAttr(p[0], "href").?);
+}
+
 test "image" {
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -396,6 +493,17 @@ test "image" {
     try testing.expectEqualStrings("img", img.element.tag);
     try testing.expectEqualStrings("/img.png", expectAttr(img, "src").?);
     try testing.expectEqualStrings("alt text", expectAttr(img, "alt").?);
+}
+
+test "image title" {
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const node = try parse(arena.allocator(), "![alt text](/img.png \"Image title\")");
+    const p = try expectElement(node, "p");
+    const img = p[0];
+    try testing.expectEqualStrings("/img.png", expectAttr(img, "src").?);
+    try testing.expectEqualStrings("alt text", expectAttr(img, "alt").?);
+    try testing.expectEqualStrings("Image title", expectAttr(img, "title").?);
 }
 
 test "inline code" {
@@ -432,7 +540,7 @@ test "backslash escape" {
     defer arena.deinit();
     const node = try parse(arena.allocator(), "\\*literal\\*");
     const p = try expectElement(node, "p");
-    const full = collectText(arena.allocator(), p);
+    const full = try collectText(arena.allocator(), p);
     try testing.expectEqualStrings("*literal*", full);
 }
 
