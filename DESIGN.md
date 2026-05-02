@@ -5,14 +5,16 @@ GFM Markdown parser for ztree. Parses Markdown text into a ztree `Node` tree.
 ## Public API
 
 ```zig
-pub fn parse(allocator: std.mem.Allocator, input: []const u8) !ztree.Node
+pub const ParseError = error{ OutOfMemory, StackOverflow, InvalidMarkdownTree };
+pub fn parse(arena: std.mem.Allocator, input: []const u8) ParseError!ztree.Node
+pub fn parseOwned(backing_allocator: std.mem.Allocator, input: []const u8) ParseError!Document
 ```
 
 | Package | Signature | Direction |
 |---------|-----------|-----------|
 | ztree-html | `render(node, writer)` | tree → writer |
 | ztree-md | `render(node, writer)` | tree → writer |
-| ztree-parse-md | `parse(allocator, input)` → `Node` | input → tree |
+| ztree-parse-md | `parse(arena, input)` → `Node` | input → tree |
 
 ## Principles
 
@@ -20,7 +22,7 @@ Inherited from the ztree ecosystem:
 
 - **Pure functions whenever possible.** Data in, output out.
 - **One way to do a thing.** No options, no aliases, no alternative parse modes.
-- **Arena allocator.** Caller provides an allocator (intended to be an arena). All nodes and slices are allocated from it. Caller frees everything in one shot.
+- **Arena allocator.** `parse()` expects an arena-like allocator. All nodes and slices are allocated from it; individual node deallocation is not supported. Caller frees everything in one shot.
 - **Single-purpose functions composed together.**
 
 ## Architecture
@@ -72,13 +74,13 @@ as a build-system module — zero edits to bun-md source files.
 
 ```
 Input: []const u8          (owned by caller, must outlive parse call)
-Output: ztree.Node          (allocated via provided allocator)
+Output: ztree.Node          (allocated via provided arena)
 Text nodes: copied           (parser uses internal buffers; text is
                               copied into arena during tree building)
 Structure: []Node, []Attr   (arena-allocated)
 ```
 
-Caller usage:
+Caller-managed arena usage:
 
 ```zig
 var arena = std.heap.ArenaAllocator.init(allocator);
@@ -86,6 +88,14 @@ defer arena.deinit();
 const tree = try parse(arena.allocator(), markdown_input);
 // use tree... (render to HTML, etc.)
 // arena.deinit() frees everything
+```
+
+Owned-document usage:
+
+```zig
+var doc = try parseOwned(allocator, markdown_input);
+defer doc.deinit();
+const tree = doc.root;
 ```
 
 ## File structure

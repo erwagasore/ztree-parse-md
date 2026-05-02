@@ -2,20 +2,24 @@
     .name = .ztree_parse_md,
     .version = "1.3.0",
     .fingerprint = 0x68e45c8acb9b5ad0,
-    .minimum_zig_version = "0.15.0",
+    .minimum_zig_version = "0.16.0",
     .paths = .{
         "build.zig",
         "build.zig.zon",
         "src",
+        "README.md",
+        "DESIGN.md",
+        "CHANGELOG.md",
+        "LICENSE",
     },
     .dependencies = .{
         .ztree = .{
-            .url = "git+https://github.com/erwagasore/ztree.git#v1.2.0",
-            .hash = "ztree-1.2.0-y2WFIl4qAQDxwEshHxW4vU9VNkKiKv8x8X-li5Sv2CWV",
+            .url = "git+https://github.com/erwagasore/ztree.git?ref=v2.0.0#1e19115f91257fb6086ae7c3b356216cec6bfb57",
+            .hash = "ztree-2.0.0-y2WFIkUxAQDJbMgAKf2xSk6zjOW6XP9L-Lj79H3wuB0v",
         },
         .bun_md = .{
-            .url = "git+https://github.com/erwagasore/bun-md.git#main",
-            .hash = "bun_md-0.1.0-3RF4BS2dBQDtnfRyL631yUjEzKHA4XwInSAu6XtZHR2x",
+            .url = "git+https://github.com/erwagasore/bun-md.git#v0.2.1",
+            .hash = "bun_md-0.2.1-3RF4BXAVBgBGBbITlsqiI8z01KjfNmtmvahtLie4KnwP",
         },
     },
 }

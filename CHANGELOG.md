@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Fixes
+
+- Upgrade ztree dependency to v2.0.0 to align node types with ztree-html and ztree-md.
+- Upgrade bun-md dependency to v0.2.1 for Zig 0.16 compatibility.
+- Raise the declared minimum Zig version to 0.16.0 to match the supported toolchain.
+- Expose `Node`, explicit `ParseError`, and arena-backed `parseOwned()`/`Document` APIs for clearer ownership and error handling.
+- Preserve link/image `title` attrs and normalize email / www autolink hrefs for renderer interop.
+- Parse BOM-stripped Markdown input consistently so parser offsets and adapter source slices stay aligned.
+- Propagate adapter allocation and tree-builder failures instead of silently producing partial trees.
+- Include README, design notes, changelog, and license in packaged paths.
+
 ## [1.3.0] — 2026-03-08
 
 ### Features
