@@ -35,7 +35,13 @@ defer doc.deinit();
 const tree = doc.root;
 ```
 
+For advanced callers, `parseWithScratch(arena, scratch, input)` stores the
+returned tree in `arena` while using `scratch` only during parsing.
+
 Possible parse errors are exposed as `md.ParseError`.
+
+Raw HTML in Markdown is preserved as `raw()` nodes. If rendering untrusted
+input to HTML, sanitize before or during rendering.
 
 ## Structure
 
