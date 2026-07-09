@@ -14,8 +14,8 @@
     },
     .dependencies = .{
         .ztree = .{
-            .url = "git+https://github.com/erwagasore/ztree.git?ref=v2.1.0#e755547300d912ef43142f51455342cf2ad780b1",
-            .hash = "ztree-2.1.0-y2WFIiZTAQBLfD_QygZF6N6IpcJXUcCTgiDjHq72Y5Q1",
+            .url = "git+https://github.com/erwagasore/ztree.git?ref=v2.2.0#d8735652877aaaebdc7efe65abc42741e9336cac",
+            .hash = "ztree-2.2.0-y2WFIsFfAQBzOzBrdwcPNc1vAMNzXbhy00Xi-zxwkaWO",
         },
         .bun_md = .{
             .url = "git+https://github.com/erwagasore/bun-md.git#v0.2.1",
