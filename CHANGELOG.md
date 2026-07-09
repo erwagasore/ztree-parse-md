@@ -1,5 +1,11 @@
 # Changelog
 
+## [2.2.0] — 2026-07-09
+
+### Features
+
+- Upgrade ztree dependency to v2.2.0 (#26).
+
 ## [2.1.0] — 2026-05-02
 
 ### Features
