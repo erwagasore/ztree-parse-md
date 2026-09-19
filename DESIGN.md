@@ -6,10 +6,13 @@ GFM Markdown parser for ztree. Parses Markdown text into a ztree `Node` tree.
 
 ```zig
 pub const ParseError = error{ OutOfMemory, StackOverflow, InvalidMarkdownTree };
-pub fn parse(arena: std.mem.Allocator, input: []const u8) ParseError!ztree.Node
-pub fn parseWithScratch(arena: std.mem.Allocator, scratch: std.mem.Allocator, input: []const u8) ParseError!ztree.Node
+pub const FootnoteHtml = enum { list, both };
+pub fn parse(arena: std.mem.Allocator, input: []const u8, footnote_html: FootnoteHtml = .list) ParseError!ztree.Node
+pub fn parseWithScratch(arena: std.mem.Allocator, scratch: std.mem.Allocator, input: []const u8, footnote_html: FootnoteHtml = .list) ParseError!ztree.Node
 pub fn parseOwned(backing_allocator: std.mem.Allocator, input: []const u8) ParseError!Document
 ```
+
+`parseOwned` keeps `.list`. There is no `ParseOptions` struct.
 
 | Package | Signature | Direction |
 |---------|-----------|-----------|
@@ -22,7 +25,7 @@ pub fn parseOwned(backing_allocator: std.mem.Allocator, input: []const u8) Parse
 Inherited from the ztree ecosystem:
 
 - **Pure functions whenever possible.** Data in, output out.
-- **One way to do a thing.** No options, no aliases, no alternative parse modes.
+- **One way to do a thing.** No options, no aliases, no alternative parse modes — except footnotes: a closed `FootnoteHtml` (`.list` / `.both`) as a defaulted last argument on `parse` / `parseWithScratch`. That is the sole options exception. Existing 3-arg callers stay `.list`.
 - **Arena allocator.** `parse()` expects an arena-like allocator. All nodes and slices are allocated from it; individual node deallocation is not supported. Caller frees everything in one shot.
 - **Single-purpose functions composed together.**
 
@@ -144,5 +147,18 @@ src/
 | `[text](url)` | `a` | `href` |
 | `![alt](src)` | `img` | `src`, `alt` |
 | hard break | `br` | — |
+| `[^id]` (`.list` / `.both`) | `sup.fn` + `a` | `href` |
+| `[^id]:` (`.list` / `.both`) | `section.footnotes` + `ol` + `li` | `id` on `li` |
+| `[^id]` (`.both` extra) | `span.fn-body` inside `sup.fn` | `hidden`, `aria-hidden` |
 | plain text | `text()` | — |
 | raw HTML | `raw()` | — |
+
+## Footnotes
+
+The bun-md adapter does not emit footnotes today (`[^1]` stays ordinary text). `.list` **implements** GFM footnote HTML; it does not match current output.
+
+- **`.list` (default):** `[^id]` → `sup.fn > a`; definitions → `section.footnotes > ol > li` with back-links. Ids stay on the canonical `<li>` (`id="fn-N"`).
+- **`.both`:** the `.list` tree plus a hidden, `aria-hidden` near copy (`span.fn-body`) beside each reference. Near spans must not reuse `id="fn-N"`.
+- Structural classes only: `fn`, `fn-body`, `footnotes` — not typography utilities.
+- Documents with no footnotes are unchanged in either mode.
+- Viewport / sidebar / popover placement is a consumer concern, not this parser.
